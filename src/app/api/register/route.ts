@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { registerUser } from "@/lib/auth";
+import { registerUser, type RegisterResult } from "@/lib/auth";
 import { generateRequestId } from "@/lib/request-id";
 import { checkDatabaseForAuth, isDatabaseUrlConfigured } from "@/lib/db-status";
 
@@ -13,7 +13,11 @@ const schema = z.object({
   name: z.string().min(1).max(100).optional(),
 });
 
-type RegistrationError = Extract<Awaited<ReturnType<typeof registerUser>>, { error: string }>;
+function isRegisterError(
+  result: RegisterResult
+): result is Extract<RegisterResult, { error: string }> {
+  return "error" in result;
+}
 
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
@@ -117,36 +121,35 @@ export async function POST(req: NextRequest) {
       parsed.data.name
     );
 
-    if ("error" in result) {
-      const registrationError = result as RegistrationError;
+    if (isRegisterError(result)) {
       const status =
-        registrationError.code === "EMAIL_ALREADY_EXISTS"
+        result.code === "EMAIL_ALREADY_EXISTS"
           ? 409
-          : registrationError.code === "INVALID_INPUT"
+          : result.code === "INVALID_INPUT"
             ? 400
-            : registrationError.code === "DATABASE_NOT_CONFIGURED" ||
-                registrationError.code === "DATABASE_ERROR" ||
-                registrationError.code === "AUTH_CONFIGURATION_ERROR"
+            : result.code === "DATABASE_NOT_CONFIGURED" ||
+                result.code === "DATABASE_ERROR" ||
+                result.code === "AUTH_CONFIGURATION_ERROR"
               ? 503
               : 500;
 
       console.error("Registration business failure", {
         requestId,
-        stage: registrationError.stage ?? stage,
-        code: registrationError.code,
-        prismaCode: registrationError.prismaCode,
+        stage: result.stage ?? stage,
+        code: result.code,
+        prismaCode: result.prismaCode,
       });
 
       return NextResponse.json(
         {
           error: {
-            code: registrationError.code,
-            message: registrationError.error,
+            code: result.code,
+            message: result.error,
           },
           requestId,
           diagnostic: {
-            stage: registrationError.stage ?? stage,
-            prismaCode: registrationError.prismaCode ?? null,
+            stage: result.stage ?? stage,
+            prismaCode: result.prismaCode ?? null,
           },
         },
         { status }
