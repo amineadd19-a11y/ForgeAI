@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createCheckoutSession, isStripeConfigured } from "@/lib/stripe";
 import { prisma } from "@/lib/db";
 import { PLANS, CREDIT_PACKS } from "@/lib/config";
+import { getAppUrl } from "@/lib/app-url";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -80,10 +81,7 @@ export async function POST(req: NextRequest) {
     where: { userId: session.user.id },
   });
 
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXTAUTH_URL ||
-    "http://localhost:3000";
+  const appUrl = getAppUrl();
 
   try {
     const checkout = await createCheckoutSession({
