@@ -6,7 +6,7 @@ import { calculateCost, deductCredits, getBalance } from "@/lib/credits";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 import { generateRequestId } from "@/lib/request-id";
 import { prisma } from "@/lib/db";
-import { PLANS, PlanTier } from "@/lib/config";
+import { PLANS, PlanTier, isModelAllowed } from "@/lib/config";
 import { AiProviderError } from "@/lib/ai/types";
 
 export const runtime = "nodejs";
@@ -110,8 +110,7 @@ export async function POST(req: NextRequest) {
   }
 
   const model = body.model || process.env.AI_MODEL || "gpt-4o-mini";
-  const allowed =
-    plan.allowedModels.includes("*") || plan.allowedModels.includes(model);
+  const allowed = isModelAllowed(planTier, model);
   if (!allowed) {
     return NextResponse.json(
       {
@@ -187,7 +186,6 @@ export async function POST(req: NextRequest) {
         latencyMs: Date.now() - start,
       },
     });
-    // Never charge on provider failure
     return NextResponse.json(
       {
         error: {
@@ -204,7 +202,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Charge credits ONLY after successful provider response
   const charge = await deductCredits(userId, cost, `AI generate (${model})`, requestId);
   const latencyMs = Date.now() - start;
 
