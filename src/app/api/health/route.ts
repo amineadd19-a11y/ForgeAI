@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAiGateway } from "@/lib/ai/gateway";
 import { prisma } from "@/lib/db";
+import { checkDatabaseForAuth } from "@/lib/db-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export async function GET() {
     dbOk = false;
   }
 
+  const authDb = await checkDatabaseForAuth();
+
   let aiHealth: Awaited<ReturnType<ReturnType<typeof getAiGateway>["health"]>>;
   try {
     aiHealth = await getAiGateway().health();
@@ -30,7 +33,12 @@ export async function GET() {
     };
   }
 
-  const healthy = dbOk;
+  const authSecretConfigured = Boolean(
+    process.env.AUTH_SECRET?.trim() || process.env.NEXTAUTH_SECRET?.trim()
+  );
+  const databaseUrlConfigured = Boolean(process.env.DATABASE_URL?.trim());
+
+  const healthy = dbOk && authDb.ok && authSecretConfigured;
 
   return NextResponse.json(
     {
@@ -39,7 +47,22 @@ export async function GET() {
       timestamp: new Date().toISOString(),
       latencyMs: Date.now() - start,
       checks: {
-        database: { ok: dbOk, latencyMs: dbLatency },
+        database: {
+          ok: dbOk,
+          latencyMs: dbLatency,
+          urlConfigured: databaseUrlConfigured,
+          authSchemaReady: authDb.ok,
+          ...(authDb.ok
+            ? {}
+            : {
+                authSchemaStage: authDb.stage,
+                authSchemaCode: authDb.code,
+                prismaCode: authDb.prismaCode ?? null,
+              }),
+        },
+        auth: {
+          secretConfigured: authSecretConfigured,
+        },
         ai: {
           primary: aiHealth.primary,
           available: aiHealth.available,
