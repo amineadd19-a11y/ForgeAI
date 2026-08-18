@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+        env:
+          AI_PROVIDER: mock
+          NODE_ENV: test
+      - name: Build
+        run: npm run build
+        env:
+          AI_PROVIDER: mock
+          AUTH_SECRET: ci-test-secret-not-for-production
+          NEXTAUTH_SECRET: ci-test-secret-not-for-production
+          DATABASE_URL: postgresql://user:pass@localhost:5432/forgeai?schema=public
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
