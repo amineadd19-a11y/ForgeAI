@@ -13,6 +13,8 @@ const schema = z.object({
   name: z.string().min(1).max(100).optional(),
 });
 
+type RegistrationError = Extract<Awaited<ReturnType<typeof registerUser>>, { error: string }>;
+
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   let stage = "start";
@@ -116,34 +118,35 @@ export async function POST(req: NextRequest) {
     );
 
     if ("error" in result) {
+      const registrationError = result as RegistrationError;
       const status =
-        result.code === "EMAIL_ALREADY_EXISTS"
+        registrationError.code === "EMAIL_ALREADY_EXISTS"
           ? 409
-          : result.code === "INVALID_INPUT"
+          : registrationError.code === "INVALID_INPUT"
             ? 400
-            : result.code === "DATABASE_NOT_CONFIGURED" ||
-                result.code === "DATABASE_ERROR" ||
-                result.code === "AUTH_CONFIGURATION_ERROR"
+            : registrationError.code === "DATABASE_NOT_CONFIGURED" ||
+                registrationError.code === "DATABASE_ERROR" ||
+                registrationError.code === "AUTH_CONFIGURATION_ERROR"
               ? 503
               : 500;
 
       console.error("Registration business failure", {
         requestId,
-        stage: result.stage ?? stage,
-        code: result.code,
-        prismaCode: result.prismaCode,
+        stage: registrationError.stage ?? stage,
+        code: registrationError.code,
+        prismaCode: registrationError.prismaCode,
       });
 
       return NextResponse.json(
         {
           error: {
-            code: result.code,
-            message: result.error,
+            code: registrationError.code,
+            message: registrationError.error,
           },
           requestId,
           diagnostic: {
-            stage: result.stage ?? stage,
-            prismaCode: result.prismaCode ?? null,
+            stage: registrationError.stage ?? stage,
+            prismaCode: registrationError.prismaCode ?? null,
           },
         },
         { status }
@@ -177,12 +180,8 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(
       {
-        error: {
-          code: "REGISTRATION_FAILED",
-          message: "Registration failed. Please try again.",
-        },
+        error: { code: "REGISTRATION_FAILED", message: "Registration failed. Please try again." },
         requestId,
-        diagnostic: { stage },
       },
       { status: 500 }
     );
