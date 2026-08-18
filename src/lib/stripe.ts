@@ -33,7 +33,7 @@ export async function createCheckoutSession(params: {
 }): Promise<Stripe.Checkout.Session> {
   const stripe = getStripe();
   const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [];
-  let metadata: Record<string, string> = { userId: params.userId };
+  const metadata: Record<string, string> = { userId: params.userId };
 
   if (params.mode === "subscription" && params.planTier) {
     const plan = PLANS[params.planTier];
