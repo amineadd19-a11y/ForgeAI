@@ -1,0 +1,57 @@
+import { NextResponse } from "next/server";
+import { getAiGateway } from "@/lib/ai/gateway";
+import { prisma } from "@/lib/db";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const start = Date.now();
+  let dbOk = false;
+  let dbLatency = 0;
+
+  try {
+    const t0 = Date.now();
+    await prisma.$queryRaw`SELECT 1`;
+    dbLatency = Date.now() - t0;
+    dbOk = true;
+  } catch {
+    dbOk = false;
+  }
+
+  let aiHealth: Awaited<ReturnType<ReturnType<typeof getAiGateway>["health"]>>;
+  try {
+    aiHealth = await getAiGateway().health();
+  } catch {
+    aiHealth = {
+      primary: process.env.AI_PROVIDER || "unknown",
+      available: false,
+      providers: {},
+    };
+  }
+
+  const healthy = dbOk;
+
+  return NextResponse.json(
+    {
+      status: healthy ? "ok" : "degraded",
+      version: process.env.npm_package_version || "1.0.0",
+      timestamp: new Date().toISOString(),
+      latencyMs: Date.now() - start,
+      checks: {
+        database: { ok: dbOk, latencyMs: dbLatency },
+        ai: {
+          primary: aiHealth.primary,
+          available: aiHealth.available,
+          providers: aiHealth.providers,
+        },
+      },
+    },
+    {
+      status: healthy ? 200 : 503,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    }
+  );
+}
