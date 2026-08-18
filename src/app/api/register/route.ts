@@ -10,7 +10,10 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   email: z.string().email("Valid email is required"),
   password: z.string().min(8, "Password must be at least 8 characters").max(128),
-  name: z.string().min(1).max(100).optional(),
+  name: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().trim().min(1).max(100).optional()
+  ),
 });
 
 function isRegisterError(
