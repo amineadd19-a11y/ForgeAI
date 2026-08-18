@@ -6,7 +6,6 @@ import {
   AiGenerateResponse,
   AiProvider,
   AiProviderError,
-  ProviderName,
 } from "./types";
 
 /**
