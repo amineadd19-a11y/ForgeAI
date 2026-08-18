@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 const nav = [
   { href: "/dashboard", label: "Overview" },
+  { href: "/dashboard/movie-studio", label: "🎬 Movie Studio" },
   { href: "/dashboard/playground", label: "Playground" },
   { href: "/dashboard/api-keys", label: "API Keys" },
   { href: "/dashboard/usage", label: "Usage" },
