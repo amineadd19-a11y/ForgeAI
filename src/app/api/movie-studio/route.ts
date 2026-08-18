@@ -16,6 +16,22 @@ const schema = z.object({
   style: z.string().min(1).max(80),
 });
 
+function publicAiError(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "UNKNOWN";
+  const lower = raw.toLowerCase();
+  if (lower.includes("api key") || lower.includes("unauthorized") || lower.includes("authentication")) {
+    return { code: "AI_NOT_CONFIGURED", message: "Movie Studio AI is not configured on the server. Please configure the AI provider key in Production." };
+  }
+  if (lower.includes("rate limit") || lower.includes("429")) {
+    return { code: "AI_RATE_LIMITED", message: "The AI provider is temporarily rate-limited. Please try again in a moment." };
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return { code: "AI_TIMEOUT", message: "Movie Studio AI timed out. Please try the scene again." };
+  }
+  return { code: code || "AI_GENERATION_FAILED", message: "Movie Studio could not generate this production package. No credits were charged. Please try again." };
+}
+
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -31,16 +47,7 @@ export async function POST(req: NextRequest) {
   if (balance < cost) return NextResponse.json({ error: `This film transformation costs ${cost} credits. You have ${balance}.` }, { status: 402 });
 
   const requestId = generateRequestId();
-  const prompt = `You are ForgeAI Movie Studio: an expert screenwriter, director, cinematographer, storyboard artist, sound designer and AI-video prompt engineer. Transform the supplied screenplay into a coherent film production package. Preserve the source story, characters, chronology and dialogue intent. Never invent important facts that contradict the source.
-
-OUTPUT JSON with these keys exactly: title, logline, characters, scenes, imagePrompts, videoPrompts, soundDesign, editingPlan, productionChecklist.
-Each scene must contain: sceneNumber, slugline, durationSeconds, action, dialogue, emotion, visualContinuity, shots. Each shot must contain shotType, framing, cameraMovement, lens, lighting, prompt. imagePrompts and videoPrompts must be an array with one item per scene. Keep character appearance descriptions consistent across every scene. Video prompts should describe motion, camera movement and environment and be suitable for downstream AI video generation. Do not claim to have rendered a video.
-
-FORMAT: ${body.data.format}
-VISUAL STYLE: ${body.data.style}
-
-SCREENPLAY:
-${body.data.script}`;
+  const prompt = `You are ForgeAI Movie Studio: an expert screenwriter, director, cinematographer, storyboard artist, sound designer and AI-video prompt engineer. Transform the supplied screenplay into a coherent film production package. Preserve the source story, characters, chronology and dialogue intent. Never invent important facts that contradict the source.\n\nOUTPUT JSON with these keys exactly: title, logline, characters, scenes, imagePrompts, videoPrompts, soundDesign, editingPlan, productionChecklist.\nEach scene must contain: sceneNumber, slugline, durationSeconds, action, dialogue, emotion, visualContinuity, shots. Each shot must contain shotType, framing, cameraMovement, lens, lighting, prompt. imagePrompts and videoPrompts must be an array with one item per scene. Keep character appearance descriptions consistent across every scene. Video prompts should describe motion, camera movement and environment and be suitable for downstream AI video generation. Do not claim to have rendered a video.\n\nFORMAT: ${body.data.format}\nVISUAL STYLE: ${body.data.style}\n\nSCREENPLAY:\n${body.data.script}`;
 
   await prisma.aiRequest.create({ data: { userId: user.id, requestId, provider: process.env.AI_PROVIDER || "openai", model: process.env.AI_MODEL || "gpt-4o-mini", status: "PENDING", creditsCharged: 0 } });
 
@@ -51,6 +58,8 @@ ${body.data.script}`;
     return NextResponse.json({ requestId, film: result.content, usage: { credits: charge.success ? cost : 0, remaining: charge.balanceAfter } });
   } catch (error) {
     await prisma.aiRequest.update({ where: { requestId }, data: { status: "FAILED", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Generation failed", completedAt: new Date() } });
-    return NextResponse.json({ error: error instanceof Error ? error.message : "AI generation failed", requestId }, { status: 502 });
+    const safe = publicAiError(error);
+    console.error("Movie Studio generation failed", { requestId, code: safe.code, provider: process.env.AI_PROVIDER || "openai" });
+    return NextResponse.json({ error: safe.message, code: safe.code, requestId, creditsCharged: 0 }, { status: 502 });
   }
 }
