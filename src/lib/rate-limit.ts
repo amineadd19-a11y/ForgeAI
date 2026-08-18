@@ -1,5 +1,5 @@
 import { prisma } from "./db";
-import { PLANS, PlanTier, RATE_LIMITS } from "./config";
+import { PLANS, PlanTier } from "./config";
 
 /**
  * Simple database-backed rate limiter.
