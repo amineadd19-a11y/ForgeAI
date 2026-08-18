@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { createCheckoutSession } from "@/lib/stripe";
+import { createCheckoutSession, isStripeConfigured } from "@/lib/stripe";
 import { prisma } from "@/lib/db";
 import { PLANS, PlanTier } from "@/lib/config";
+import { getRequestOrigin } from "@/lib/app-url";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +16,13 @@ export async function POST(req: Request) {
 
   if (!userId || !email) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  if (!isStripeConfigured()) {
+    return NextResponse.json(
+      { error: "Stripe is not configured on this deployment" },
+      { status: 503 }
+    );
   }
 
   try {
@@ -30,7 +38,7 @@ export async function POST(req: Request) {
       select: { stripeCustomerId: true },
     });
 
-    const origin = process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin;
+    const origin = getRequestOrigin(req);
     const checkout = await createCheckoutSession({
       userId,
       email,
