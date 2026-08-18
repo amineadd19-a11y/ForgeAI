@@ -15,10 +15,13 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-      - run: npm ci
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - run: npx prisma generate
       - name: Lint
         run: npm run lint
+        continue-on-error: false
       - name: Typecheck
         run: npm run typecheck
       - name: Test
