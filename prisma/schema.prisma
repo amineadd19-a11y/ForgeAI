@@ -1,0 +1,306 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PRO
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+  TRIALING
+  UNPAID
+}
+
+enum CreditTransactionType {
+  PURCHASE
+  SUBSCRIPTION_GRANT
+  USAGE
+  REFUND
+  ADJUSTMENT
+  BONUS
+}
+
+enum AiRequestStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  TIMEOUT
+  RATE_LIMITED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  CANCELED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  passwordHash  String?
+  role          Role      @default(USER)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  accounts           Account[]
+  sessions           Session[]
+  apiKeys            ApiKey[]
+  creditBalance      CreditBalance?
+  creditTransactions CreditTransaction[]
+  usageEvents        UsageEvent[]
+  aiRequests         AiRequest[]
+  payments           Payment[]
+  subscription       Subscription?
+  auditLogs          AuditLog[]
+  @@index([email])
+  @@index([role])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  @@unique([identifier, token])
+}
+
+model Plan {
+  id                   String   @id @default(cuid())
+  tier                 PlanTier @unique
+  name                 String
+  description          String?
+  monthlyPriceCents    Int
+  yearlyPriceCents     Int?
+  includedCredits      Int
+  maxRequestsPerMinute Int
+  maxRequestsPerDay    Int
+  maxInputTokens       Int
+  maxOutputTokens      Int
+  allowedModels        String[]
+  features             Json?
+  stripePriceIdMonthly String?
+  stripePriceIdYearly  String?
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  planId               String
+  status               SubscriptionStatus @default(INCOMPLETE)
+  stripeSubscriptionId String?            @unique
+  stripeCustomerId     String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+  @@index([status])
+  @@index([stripeCustomerId])
+}
+
+model CreditBalance {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  balance   Int      @default(0)
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+
+model CreditTransaction {
+  id           String                @id @default(cuid())
+  userId       String
+  type         CreditTransactionType
+  amount       Int
+  balanceAfter Int
+  description  String?
+  referenceId  String?
+  metadata     Json?
+  createdAt    DateTime              @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, createdAt])
+  @@index([referenceId])
+  @@index([type])
+}
+
+model ApiKey {
+  id                String    @id @default(cuid())
+  userId            String
+  name              String
+  keyHash           String
+  keyPrefix         String
+  lastUsedAt        DateTime?
+  expiresAt         DateTime?
+  revokedAt         DateTime?
+  isActive          Boolean   @default(true)
+  rateLimitOverride Int?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvents UsageEvent[]
+  aiRequests  AiRequest[]
+  @@index([userId])
+  @@index([keyPrefix])
+  @@index([isActive])
+  @@unique([keyHash])
+}
+
+model UsageEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  apiKeyId     String?
+  endpoint     String
+  method       String
+  statusCode   Int
+  creditsUsed  Int      @default(0)
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+  requestId    String   @unique
+  ip           String?
+  userAgent    String?
+  errorCode    String?
+  createdAt    DateTime @default(now())
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  @@index([userId, createdAt])
+  @@index([apiKeyId])
+  @@index([requestId])
+}
+
+model AiRequest {
+  id             String          @id @default(cuid())
+  userId         String
+  apiKeyId       String?
+  requestId      String          @unique
+  provider       String
+  model          String
+  status         AiRequestStatus @default(PENDING)
+  inputTokens    Int?
+  outputTokens   Int?
+  creditsCharged Int             @default(0)
+  latencyMs      Int?
+  errorMessage   String?
+  promptHash     String?
+  metadata       Json?
+  createdAt      DateTime        @default(now())
+  completedAt    DateTime?
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([provider, model])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  userId                String
+  stripePaymentIntentId String?       @unique
+  stripeSessionId       String?       @unique
+  amountCents           Int
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  type                  String
+  creditsGranted        Int?
+  description           String?
+  metadata              Json?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+  @@index([status])
+}
+
+model WebhookEvent {
+  id              String   @id @default(cuid())
+  provider        String
+  eventId         String   @unique
+  type            String
+  payload         Json
+  processed       Boolean  @default(false)
+  processingError String?
+  createdAt       DateTime @default(now())
+  processedAt     DateTime?
+  @@index([eventId])
+  @@index([processed])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resource   String?
+  resourceId String?
+  ip         String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model RateLimitBucket {
+  id        String   @id @default(cuid())
+  key       String
+  window    String
+  count     Int      @default(0)
+  expiresAt DateTime
+  @@unique([key, window])
+  @@index([expiresAt])
+}
