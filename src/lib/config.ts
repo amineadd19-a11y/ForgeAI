@@ -33,7 +33,7 @@ export const PLANS = {
     maxRequestsPerDay: 100,
     maxInputTokens: 2048,
     maxOutputTokens: 1024,
-    allowedModels: ["gpt-4o-mini", "claude-3-haiku", "gemini-1.5-flash"],
+    allowedModels: ["gpt-4o-mini", "claude-3-haiku", "gemini-1.5-flash"] as string[],
     features: ["Basic generation", "API access", "Community support"],
   },
   STARTER: {
@@ -54,7 +54,7 @@ export const PLANS = {
       "claude-3-5-sonnet",
       "gemini-1.5-flash",
       "gemini-1.5-pro",
-    ],
+    ] as string[],
     features: [
       "Everything in Free",
       "Higher rate limits",
@@ -73,7 +73,7 @@ export const PLANS = {
     maxRequestsPerDay: 10000,
     maxInputTokens: 32000,
     maxOutputTokens: 8192,
-    allowedModels: ["*"],
+    allowedModels: ["*"] as string[],
     features: [
       "Everything in Starter",
       "Advanced models",
@@ -93,13 +93,12 @@ export const PLANS = {
     maxRequestsPerDay: 100000,
     maxInputTokens: 128000,
     maxOutputTokens: 16384,
-    allowedModels: ["*"],
+    allowedModels: ["*"] as string[],
     features: [
       "Everything in Pro",
       "Custom rate limits",
       "SSO ready",
       "SLA",
-      "Audit logs",
       "Dedicated account manager",
     ],
   },

@@ -10,7 +10,7 @@ export function getStripe(): Stripe {
       throw new Error("STRIPE_SECRET_KEY is not configured");
     }
     stripeClient = new Stripe(key, {
-      apiVersion: "2024-06-20",
+      apiVersion: "2025-02-24.acacia",
       typescript: true,
     });
   }
@@ -52,55 +52,44 @@ export async function createCheckoutSession(params: {
       },
       quantity: 1,
     });
-    metadata = { ...metadata, type: "subscription", planTier: params.planTier };
+    metadata.planTier = params.planTier;
+    metadata.type = "subscription";
   } else if (params.mode === "payment" && params.creditPackId) {
     const pack = CREDIT_PACKS.find((p) => p.id === params.creditPackId);
-    if (!pack) throw new Error("Invalid credit pack");
+    if (!pack) {
+      throw new Error("Invalid credit pack");
+    }
     lineItems.push({
       price_data: {
         currency: "usd",
         unit_amount: pack.priceCents,
         product_data: {
-          name: `ForgeAI ${pack.label}`,
-          description: `${pack.credits} credits`,
+          name: pack.label,
+          description: `${pack.credits} ForgeAI credits`,
         },
       },
       quantity: 1,
     });
-    metadata = {
-      ...metadata,
-      type: "credits",
-      creditPackId: pack.id,
-      credits: String(pack.credits),
-    };
+    metadata.creditPackId = pack.id;
+    metadata.credits = String(pack.credits);
+    metadata.type = "credit_pack";
   } else {
     throw new Error("Invalid checkout parameters");
   }
 
   const sessionParams: Stripe.Checkout.SessionCreateParams = {
     mode: params.mode,
+    customer_email: params.email,
     line_items: lineItems,
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
-    client_reference_id: params.userId,
     metadata,
-    customer_email: params.stripeCustomerId ? undefined : params.email,
   };
 
   if (params.stripeCustomerId) {
     sessionParams.customer = params.stripeCustomerId;
+    delete sessionParams.customer_email;
   }
 
   return stripe.checkout.sessions.create(sessionParams);
-}
-
-export async function createCustomerPortalSession(
-  customerId: string,
-  returnUrl: string
-): Promise<Stripe.BillingPortal.Session> {
-  const stripe = getStripe();
-  return stripe.billingPortal.sessions.create({
-    customer: customerId,
-    return_url: returnUrl,
-  });
 }

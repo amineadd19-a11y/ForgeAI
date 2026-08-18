@@ -3,7 +3,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 describe("AI Gateway", () => {
   beforeAll(() => {
     process.env.AI_PROVIDER = "mock";
-    process.env.NODE_ENV = "test";
+    // process.env.NODE_ENV is read-only in types; already set via env
+    // process.env.NODE_ENV = "test";
   });
 
   it("generates via mock", async () => {
