@@ -1,13 +1,9 @@
 import { AI_DEFAULTS } from "../config";
 import { OpenAIProvider } from "./providers/openai";
 import { AnthropicProvider } from "./providers/anthropic";
+import { GoogleProvider } from "./providers/google";
 import { MockProvider } from "./providers/mock";
-import {
-  AiGenerateRequest,
-  AiGenerateResponse,
-  AiProvider,
-  AiProviderError,
-} from "./types";
+import { AiGenerateRequest, AiGenerateResponse, AiProvider, AiProviderError } from "./types";
 
 export class AiGateway {
   private providers: Map<string, AiProvider> = new Map();
@@ -17,10 +13,11 @@ export class AiGateway {
   constructor() {
     const providerName = (process.env.AI_PROVIDER || "openai").toLowerCase();
     this.primary = providerName;
-    this.fallback = (process.env.AI_FALLBACK_PROVIDER || "anthropic").toLowerCase();
+    this.fallback = (process.env.AI_FALLBACK_PROVIDER || "google").toLowerCase();
 
     this.providers.set("openai", new OpenAIProvider());
     this.providers.set("anthropic", new AnthropicProvider());
+    this.providers.set("google", new GoogleProvider());
     this.providers.set("mock", new MockProvider());
   }
 
@@ -37,9 +34,12 @@ export class AiGateway {
       try { status[name] = await provider.isAvailable(); } catch { status[name] = false; }
     }
     const primaryAvailable = status[this.primary] ?? false;
+    const fallbackAvailable = this.fallback ? status[this.fallback] ?? false : false;
+    const googleAvailable = status.google ?? false;
+    const localMockAvailable = process.env.NODE_ENV !== "production" && status.mock;
     return {
       primary: this.primary,
-      available: primaryAvailable || (this.fallback ? status[this.fallback] ?? false : false) || (process.env.NODE_ENV !== "production" && status.mock),
+      available: primaryAvailable || fallbackAvailable || googleAvailable || Boolean(localMockAvailable),
       providers: status,
     };
   }
@@ -59,6 +59,16 @@ export class AiGateway {
     throw lastError || { code: "UNKNOWN", message: "AI request failed", retryable: false };
   }
 
+  private fallbackRequest(providerName: string, req: AiGenerateRequest): AiGenerateRequest {
+    if (providerName === "google") {
+      return { ...req, model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite" };
+    }
+    if (providerName === "anthropic") {
+      return { ...req, model: process.env.AI_FALLBACK_MODEL || "claude-3-5-haiku-latest" };
+    }
+    return req;
+  }
+
   async generate(req: AiGenerateRequest, options?: { retries?: number; allowFallback?: boolean }): Promise<AiGenerateResponse> {
     const text = req.prompt || req.messages?.map((m) => m.content).join("") || "";
     if (text.length > AI_DEFAULTS.maxInputChars) {
@@ -71,24 +81,25 @@ export class AiGateway {
       return await this.runWithRetry(primary, req, retries);
     } catch (primaryError) {
       const error = primaryError as AiProviderError;
-      const fallbackName = options?.allowFallback === false ? null : this.fallback;
-      const fallback = fallbackName ? this.providers.get(fallbackName) : undefined;
+      if (options?.allowFallback === false) throw error;
 
-      if (fallback && fallbackName !== this.primary && await fallback.isAvailable()) {
+      const candidates = [this.fallback, "google", "anthropic"].filter(
+        (name, index, all): name is string => Boolean(name) && name !== this.primary && all.indexOf(name) === index
+      );
+
+      for (const fallbackName of candidates) {
+        const fallback = this.providers.get(fallbackName);
+        if (!fallback) continue;
         try {
-          const fallbackReq = fallbackName === "anthropic" && !req.model?.startsWith("claude-")
-            ? { ...req, model: process.env.AI_FALLBACK_MODEL || "claude-3-5-haiku-latest" }
-            : req;
-          return await this.runWithRetry(fallback, fallbackReq, 1);
+          if (!(await fallback.isAvailable())) continue;
+          return await this.runWithRetry(fallback, this.fallbackRequest(fallbackName, req), 1);
         } catch {
-          // Preserve the primary error for callers and billing/observability.
+          // Try the next configured provider without masking the original error.
         }
       }
 
       if (process.env.NODE_ENV !== "production" && this.primary !== "mock") {
-        try {
-          return await this.providers.get("mock")!.generate(req);
-        } catch { /* ignore */ }
+        try { return await this.providers.get("mock")!.generate(req); } catch { /* ignore */ }
       }
       throw error;
     }
