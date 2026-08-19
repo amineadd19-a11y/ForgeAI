@@ -1,4 +1,4 @@
-export type PromptCategory = "coding" | "research" | "writing" | "analysis" | "business" | "creative";
+export type PromptCategory = "coding" | "research" | "writing" | "analysis" | "business" | "creative" | "video";
 
 export interface PromptTemplate {
   id: string;
@@ -94,6 +94,30 @@ export const PROMPT_LIBRARY: PromptTemplate[] = [
     category: "analysis",
     template: "Improve this AI prompt for reliability and useful output.\n\nOriginal prompt:\n{{prompt}}\n\nReturn: optimized prompt, why it is better, missing inputs, and one example of ideal output. Preserve the user's intent; do not add unsupported requirements.",
     tags: ["prompt-engineering", "optimization", "reliability"],
+  },
+  {
+    id: "video-script-to-storyboard",
+    title: "Script to Production Storyboard",
+    description: "Turn a script into scene-by-scene shots with continuity, camera language, and motion prompts.",
+    category: "video",
+    template: "Act as a film director, cinematographer and AI-video prompt engineer. Transform this script into a production storyboard.\n\nScript:\n{{script}}\nFormat: {{format}}\nStyle: {{style}}\n\nFor every scene return: slugline, action, dialogue, durationSeconds, character continuity, shot list, framing, camera movement, lens, lighting, image prompt, video motion prompt, sound cues and transition. Keep recurring characters visually consistent. Never claim media was actually rendered.",
+    tags: ["video", "storyboard", "cinematography", "continuity"],
+  },
+  {
+    id: "short-form-video",
+    title: "Short-Form Viral Video Planner",
+    description: "Build a concise short-video package optimized for retention without inventing facts.",
+    category: "video",
+    template: "Create a short-form video plan for: {{topic}}. Platform: {{platform}}. Audience: {{audience}}.\n\nReturn hook (first 2 seconds), voiceover script, scene-by-scene visuals, on-screen captions, b-roll ideas, pacing, sound cues, CTA and a shot list. Keep factual claims grounded in the supplied topic/context and label anything that needs verification as NOT VERIFIED.",
+    tags: ["shorts", "tiktok", "reels", "retention"],
+  },
+  {
+    id: "voiceover-and-captions",
+    title: "Voiceover + Captions Pack",
+    description: "Prepare clean narration and subtitle-ready segments for a generated video.",
+    category: "video",
+    template: "Convert this script into a voiceover and subtitle package.\n\nScript:\n{{script}}\nLanguage: {{language}}\nTone: {{tone}}\n\nPreserve meaning. Break narration into short subtitle-safe segments, avoid awkward line breaks, estimate timing per segment, and include pronunciation notes only where genuinely useful. Do not add facts.",
+    tags: ["voiceover", "subtitles", "captions", "tts"],
   },
 ];
 
