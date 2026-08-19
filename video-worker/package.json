@@ -1,0 +1,13 @@
+{
+  "name": "forgeai-video-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone FFmpeg worker for ForgeAI Movie Studio rendering jobs",
+  "scripts": {
+    "start": "node worker.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
