@@ -1,6 +1,6 @@
 {
   "name": "forgeai-video-worker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Standalone FFmpeg worker for ForgeAI Movie Studio rendering jobs",
@@ -9,5 +9,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.864.0",
+    "@aws-sdk/s3-request-presigner": "^3.864.0",
+    "pg": "^8.16.3"
   }
 }
