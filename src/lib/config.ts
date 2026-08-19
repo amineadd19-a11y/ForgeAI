@@ -8,18 +8,26 @@ export const APP_NAME = "ForgeAI";
 export const APP_VERSION = "1.0.0";
 
 export const CREDIT_COSTS = {
-  generate: {
-    basic: 1,
-    standard: 2,
-    advanced: 5,
-  },
-  analyze: {
-    basic: 3,
-    standard: 5,
-    advanced: 10,
-  },
+  generate: { basic: 1, standard: 2, advanced: 5 },
+  analyze: { basic: 3, standard: 5, advanced: 10 },
   default: 2,
 } as const;
+
+const FREE_MODELS = [
+  "gpt-4o-mini",
+  "claude-3-haiku",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3.1-flash-lite",
+] as string[];
+
+const STARTER_MODELS = [
+  ...FREE_MODELS,
+  "gpt-4o",
+  "claude-3-5-sonnet",
+  "gemini-2.5-pro",
+  "gemini-3.5-flash",
+] as string[];
 
 export const PLANS = {
   FREE: {
@@ -33,7 +41,7 @@ export const PLANS = {
     maxRequestsPerDay: 100,
     maxInputTokens: 2048,
     maxOutputTokens: 1024,
-    allowedModels: ["gpt-4o-mini", "claude-3-haiku", "gemini-1.5-flash"] as string[],
+    allowedModels: FREE_MODELS,
     features: ["Basic generation", "API access", "Community support"],
   },
   STARTER: {
@@ -47,20 +55,8 @@ export const PLANS = {
     maxRequestsPerDay: 1000,
     maxInputTokens: 8192,
     maxOutputTokens: 4096,
-    allowedModels: [
-      "gpt-4o-mini",
-      "gpt-4o",
-      "claude-3-haiku",
-      "claude-3-5-sonnet",
-      "gemini-1.5-flash",
-      "gemini-1.5-pro",
-    ] as string[],
-    features: [
-      "Everything in Free",
-      "Higher rate limits",
-      "Priority support",
-      "Usage analytics",
-    ],
+    allowedModels: STARTER_MODELS,
+    features: ["Everything in Free", "Higher rate limits", "Priority support", "Usage analytics"],
   },
   PRO: {
     tier: "PRO" as const,
@@ -74,13 +70,7 @@ export const PLANS = {
     maxInputTokens: 32000,
     maxOutputTokens: 8192,
     allowedModels: ["*"] as string[],
-    features: [
-      "Everything in Starter",
-      "Advanced models",
-      "Higher limits",
-      "Webhook support",
-      "Dedicated support",
-    ],
+    features: ["Everything in Starter", "Advanced models", "Higher limits", "Webhook support", "Dedicated support"],
   },
   BUSINESS: {
     tier: "BUSINESS" as const,
@@ -94,13 +84,7 @@ export const PLANS = {
     maxInputTokens: 128000,
     maxOutputTokens: 16384,
     allowedModels: ["*"] as string[],
-    features: [
-      "Everything in Pro",
-      "Custom rate limits",
-      "SSO ready",
-      "SLA",
-      "Dedicated account manager",
-    ],
+    features: ["Everything in Pro", "Custom rate limits", "SSO ready", "SLA", "Dedicated account manager"],
   },
 } as const;
 
@@ -112,10 +96,7 @@ export const CREDIT_PACKS = [
   { id: "credits_10000", credits: 10000, priceCents: 8000, label: "10,000 credits" },
 ] as const;
 
-export const RATE_LIMITS = {
-  globalIpPerMinute: 60,
-  authAttemptsPerMinute: 10,
-} as const;
+export const RATE_LIMITS = { globalIpPerMinute: 60, authAttemptsPerMinute: 10 } as const;
 
 export const AI_DEFAULTS = {
   timeoutMs: 60_000,
@@ -124,18 +105,12 @@ export const AI_DEFAULTS = {
   maxOutputTokensDefault: 4096,
 } as const;
 
-export function getCreditCost(
-  operation: "generate" | "analyze",
-  complexity: "basic" | "standard" | "advanced" = "standard"
-): number {
+export function getCreditCost(operation: "generate" | "analyze", complexity: "basic" | "standard" | "advanced" = "standard"): number {
   const costs = CREDIT_COSTS[operation];
   return costs[complexity] ?? CREDIT_COSTS.default;
 }
 
-export function isModelAllowed(
-  planTier: PlanTier,
-  model: string
-): boolean {
+export function isModelAllowed(planTier: PlanTier, model: string): boolean {
   const plan = PLANS[planTier];
   if (!plan) return false;
   if (plan.allowedModels.includes("*")) return true;
