@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: forgeai-video-worker
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: video-worker
+    buildCommand: apt-get update && apt-get install -y ffmpeg && npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
