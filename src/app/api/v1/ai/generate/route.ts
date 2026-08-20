@@ -40,6 +40,38 @@ function sseEncode(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
 
+async function recordClientAbort(params: {
+  requestId: string;
+  userId: string;
+  apiKeyId: string | null;
+  start: number;
+}) {
+  const { requestId, userId, apiKeyId, start } = params;
+  await prisma.aiRequest.update({
+    where: { requestId },
+    data: {
+      status: "FAILED",
+      errorMessage: "Client aborted",
+      completedAt: new Date(),
+      latencyMs: Date.now() - start,
+      creditsCharged: 0,
+    },
+  });
+  await prisma.usageEvent.create({
+    data: {
+      userId,
+      apiKeyId,
+      endpoint: "/api/v1/ai/generate",
+      method: "POST",
+      statusCode: 499,
+      creditsUsed: 0,
+      requestId,
+      errorCode: "CLIENT_ABORTED",
+      latencyMs: Date.now() - start,
+    },
+  });
+}
+
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   const start = Date.now();
@@ -210,10 +242,8 @@ export async function POST(req: NextRequest) {
     complexity: body.complexity,
   };
 
-  // ---------- Streaming path ----------
   if (body.stream) {
     const encoder = new TextEncoder();
-    /** Set true when the client disconnects (ReadableStream.cancel or req.signal). */
     let clientAborted = false;
     const streamAbort = new AbortController();
 
@@ -227,7 +257,6 @@ export async function POST(req: NextRequest) {
       }
     };
 
-    // Next.js / undici: request signal aborts when the client closes the connection
     if (req.signal.aborted) {
       markAborted();
     } else {
@@ -252,9 +281,7 @@ export async function POST(req: NextRequest) {
           for await (const event of getAiGateway().streamGenerate(generateArgs, {
             signal: streamAbort.signal,
           })) {
-            if (clientAborted || streamAbort.signal.aborted) {
-              break;
-            }
+            if (clientAborted || streamAbort.signal.aborted) break;
 
             if (event.type === "delta") {
               send({ type: "delta", content: event.content, requestId });
@@ -296,31 +323,8 @@ export async function POST(req: NextRequest) {
             }
 
             if (event.type === "done") {
-              // Client abort must never charge — even if provider finished first
               if (clientAborted || streamAbort.signal.aborted || req.signal.aborted) {
-                await prisma.aiRequest.update({
-                  where: { requestId },
-                  data: {
-                    status: "CANCELLED",
-                    errorMessage: "Client aborted",
-                    completedAt: new Date(),
-                    latencyMs: Date.now() - start,
-                    creditsCharged: 0,
-                  },
-                });
-                await prisma.usageEvent.create({
-                  data: {
-                    userId,
-                    apiKeyId,
-                    endpoint: "/api/v1/ai/generate",
-                    method: "POST",
-                    statusCode: 499,
-                    creditsUsed: 0,
-                    requestId,
-                    errorCode: "CLIENT_ABORTED",
-                    latencyMs: Date.now() - start,
-                  },
-                });
+                await recordClientAbort({ requestId, userId, apiKeyId, start });
                 completed = true;
                 break;
               }
@@ -391,29 +395,7 @@ export async function POST(req: NextRequest) {
           }
 
           if (clientAborted && !completed) {
-            await prisma.aiRequest.update({
-              where: { requestId },
-              data: {
-                status: "CANCELLED",
-                errorMessage: "Client aborted",
-                completedAt: new Date(),
-                latencyMs: Date.now() - start,
-                creditsCharged: 0,
-              },
-            });
-            await prisma.usageEvent.create({
-              data: {
-                userId,
-                apiKeyId,
-                endpoint: "/api/v1/ai/generate",
-                method: "POST",
-                statusCode: 499,
-                creditsUsed: 0,
-                requestId,
-                errorCode: "CLIENT_ABORTED",
-                latencyMs: Date.now() - start,
-              },
-            });
+            await recordClientAbort({ requestId, userId, apiKeyId, start });
             completed = true;
           }
 
@@ -451,29 +433,7 @@ export async function POST(req: NextRequest) {
         } catch (e) {
           if (clientAborted || streamAbort.signal.aborted) {
             try {
-              await prisma.aiRequest.update({
-                where: { requestId },
-                data: {
-                  status: "CANCELLED",
-                  errorMessage: "Client aborted",
-                  completedAt: new Date(),
-                  latencyMs: Date.now() - start,
-                  creditsCharged: 0,
-                },
-              });
-              await prisma.usageEvent.create({
-                data: {
-                  userId,
-                  apiKeyId,
-                  endpoint: "/api/v1/ai/generate",
-                  method: "POST",
-                  statusCode: 499,
-                  creditsUsed: 0,
-                  requestId,
-                  errorCode: "CLIENT_ABORTED",
-                  latencyMs: Date.now() - start,
-                },
-              });
+              await recordClientAbort({ requestId, userId, apiKeyId, start });
             } catch {
               /* best-effort */
             }
@@ -521,7 +481,6 @@ export async function POST(req: NextRequest) {
         }
       },
       cancel() {
-        // Browser reader.cancel() / connection drop → no charge path
         markAborted();
       },
     });
@@ -538,7 +497,6 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // ---------- Non-streaming path (unchanged contract) ----------
   let aiResult;
   try {
     aiResult = await getAiGateway().generate(generateArgs);
