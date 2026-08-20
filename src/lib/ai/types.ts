@@ -29,6 +29,38 @@ export interface AiGenerateResponse {
   latencyMs: number;
 }
 
+/** Incremental token/text chunk from a streaming provider. */
+export interface AiStreamDelta {
+  type: "delta";
+  content: string;
+}
+
+/** Final event after a successful stream (usage + metadata). */
+export interface AiStreamDone {
+  type: "done";
+  id: string;
+  model: string;
+  provider: string;
+  content: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+  finishReason: string | null;
+  latencyMs: number;
+}
+
+/** Error event emitted on the stream (safe client message). */
+export interface AiStreamError {
+  type: "error";
+  code: AiProviderError["code"];
+  message: string;
+  retryable: boolean;
+}
+
+export type AiStreamEvent = AiStreamDelta | AiStreamDone | AiStreamError;
+
 export interface AiProviderError {
   code:
     | "PROVIDER_UNAVAILABLE"
@@ -49,6 +81,8 @@ export interface AiProvider {
   isAvailable(): Promise<boolean>;
   generate(req: AiGenerateRequest): Promise<AiGenerateResponse>;
   listModels(): Promise<string[]>;
+  /** Optional SSE-style async generator. Falls back to generate() + synthetic chunks if absent. */
+  streamGenerate?(req: AiGenerateRequest): AsyncGenerator<AiStreamEvent, void, unknown>;
 }
 
 export type ProviderName = "openai" | "anthropic" | "google" | "xai" | "mock";
