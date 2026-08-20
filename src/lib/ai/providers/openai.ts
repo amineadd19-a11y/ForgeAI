@@ -3,7 +3,9 @@ import {
   AiGenerateResponse,
   AiProvider,
   AiProviderError,
+  AiStreamEvent,
 } from "../types";
+import { mapHttpErrorToProviderError, parseOpenAiCompatibleSse } from "../stream-utils";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 
@@ -49,6 +51,13 @@ export class OpenAIProvider implements AiProvider {
     }
   }
 
+  private buildMessages(req: AiGenerateRequest) {
+    return (
+      req.messages ||
+      (req.prompt ? [{ role: "user" as const, content: req.prompt }] : [])
+    );
+  }
+
   async generate(req: AiGenerateRequest): Promise<AiGenerateResponse> {
     if (!this.apiKey) {
       const err: AiProviderError = {
@@ -61,11 +70,7 @@ export class OpenAIProvider implements AiProvider {
     }
 
     const model = req.model || this.defaultModel;
-    const messages =
-      req.messages ||
-      (req.prompt
-        ? [{ role: "user" as const, content: req.prompt }]
-        : []);
+    const messages = this.buildMessages(req);
 
     if (messages.length === 0) {
       const err: AiProviderError = {
@@ -105,20 +110,7 @@ export class OpenAIProvider implements AiProvider {
 
       if (!res.ok) {
         const body = await res.text();
-        let code: AiProviderError["code"] = "UNKNOWN";
-        if (res.status === 429) code = "RATE_LIMITED";
-        else if (res.status === 401 || res.status === 403) code = "AUTH_ERROR";
-        else if (res.status >= 500) code = "PROVIDER_UNAVAILABLE";
-        else if (res.status === 400) code = "INVALID_REQUEST";
-
-        const err: AiProviderError = {
-          code,
-          message: `OpenAI error ${res.status}: ${body.slice(0, 200)}`,
-          provider: this.name,
-          retryable: res.status === 429 || res.status >= 500,
-          statusCode: res.status,
-        };
-        throw err;
+        throw mapHttpErrorToProviderError(res.status, body, this.name, "OpenAI");
       }
 
       const data = await res.json();
@@ -158,6 +150,94 @@ export class OpenAIProvider implements AiProvider {
         retryable: true,
       };
       throw err;
+    }
+  }
+
+  async *streamGenerate(req: AiGenerateRequest): AsyncGenerator<AiStreamEvent, void, unknown> {
+    if (!this.apiKey) {
+      yield {
+        type: "error",
+        code: "AUTH_ERROR",
+        message: "OpenAI API key not configured",
+        retryable: false,
+      };
+      return;
+    }
+
+    const model = req.model || this.defaultModel;
+    const messages = this.buildMessages(req);
+    if (messages.length === 0) {
+      yield {
+        type: "error",
+        code: "INVALID_REQUEST",
+        message: "No messages or prompt provided",
+        retryable: false,
+      };
+      return;
+    }
+
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 60000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: req.maxTokens ?? 2048,
+          temperature: req.temperature ?? 0.7,
+          top_p: req.topP,
+          stop: req.stop,
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        clearTimeout(timeout);
+        const body = await res.text();
+        const err = mapHttpErrorToProviderError(res.status, body, this.name, "OpenAI");
+        yield { type: "error", code: err.code, message: err.message, retryable: err.retryable };
+        return;
+      }
+
+      if (!res.body) {
+        clearTimeout(timeout);
+        yield {
+          type: "error",
+          code: "PROVIDER_UNAVAILABLE",
+          message: "OpenAI returned empty stream body",
+          retryable: true,
+        };
+        return;
+      }
+
+      yield* parseOpenAiCompatibleSse(res.body, {
+        provider: this.name,
+        model,
+        start,
+      });
+      clearTimeout(timeout);
+    } catch (e: unknown) {
+      clearTimeout(timeout);
+      if ((e as Error).name === "AbortError") {
+        yield { type: "error", code: "TIMEOUT", message: "Request timed out", retryable: true };
+        return;
+      }
+      yield {
+        type: "error",
+        code: "PROVIDER_UNAVAILABLE",
+        message: (e as Error).message || "Unknown OpenAI stream error",
+        retryable: true,
+      };
     }
   }
 }

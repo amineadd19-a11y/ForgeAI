@@ -4,7 +4,13 @@ import { AnthropicProvider } from "./providers/anthropic";
 import { GoogleProvider } from "./providers/google";
 import { XaiProvider } from "./providers/xai";
 import { MockProvider } from "./providers/mock";
-import { AiGenerateRequest, AiGenerateResponse, AiProvider, AiProviderError } from "./types";
+import {
+  AiGenerateRequest,
+  AiGenerateResponse,
+  AiProvider,
+  AiProviderError,
+  AiStreamEvent,
+} from "./types";
 
 export class AiGateway {
   private providers: Map<string, AiProvider> = new Map();
@@ -33,7 +39,11 @@ export class AiGateway {
   async health(): Promise<{ primary: string; available: boolean; providers: Record<string, boolean> }> {
     const status: Record<string, boolean> = {};
     for (const [name, provider] of this.providers) {
-      try { status[name] = await provider.isAvailable(); } catch { status[name] = false; }
+      try {
+        status[name] = await provider.isAvailable();
+      } catch {
+        status[name] = false;
+      }
     }
     const primaryAvailable = status[this.primary] ?? false;
     const fallbackAvailable = this.fallback ? status[this.fallback] ?? false : false;
@@ -46,7 +56,11 @@ export class AiGateway {
     };
   }
 
-  private async runWithRetry(provider: AiProvider, req: AiGenerateRequest, retries: number): Promise<AiGenerateResponse> {
+  private async runWithRetry(
+    provider: AiProvider,
+    req: AiGenerateRequest,
+    retries: number
+  ): Promise<AiGenerateResponse> {
     let lastError: AiProviderError | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -74,11 +88,22 @@ export class AiGateway {
     return req;
   }
 
-  async generate(req: AiGenerateRequest, options?: { retries?: number; allowFallback?: boolean }): Promise<AiGenerateResponse> {
+  private validateInput(req: AiGenerateRequest) {
     const text = req.prompt || req.messages?.map((m) => m.content).join("") || "";
     if (text.length > AI_DEFAULTS.maxInputChars) {
-      throw { code: "INVALID_REQUEST", message: `Input exceeds maximum length of ${AI_DEFAULTS.maxInputChars} characters`, retryable: false } satisfies AiProviderError;
+      throw {
+        code: "INVALID_REQUEST",
+        message: `Input exceeds maximum length of ${AI_DEFAULTS.maxInputChars} characters`,
+        retryable: false,
+      } satisfies AiProviderError;
     }
+  }
+
+  async generate(
+    req: AiGenerateRequest,
+    options?: { retries?: number; allowFallback?: boolean }
+  ): Promise<AiGenerateResponse> {
+    this.validateInput(req);
 
     const retries = options?.retries ?? AI_DEFAULTS.maxRetries;
     const primary = this.getPrimaryProvider();
@@ -89,7 +114,8 @@ export class AiGateway {
       if (options?.allowFallback === false) throw error;
 
       const candidates = [this.fallback, "xai", "google", "anthropic", "openai"].filter(
-        (name, index, all): name is string => Boolean(name) && name !== this.primary && all.indexOf(name) === index
+        (name, index, all): name is string =>
+          Boolean(name) && name !== this.primary && all.indexOf(name) === index
       );
 
       for (const fallbackName of candidates) {
@@ -104,10 +130,185 @@ export class AiGateway {
       }
 
       if (process.env.NODE_ENV !== "production" && this.primary !== "mock") {
-        try { return await this.providers.get("mock")!.generate(req); } catch { /* ignore */ }
+        try {
+          return await this.providers.get("mock")!.generate(req);
+        } catch {
+          /* ignore */
+        }
       }
       throw error;
     }
+  }
+
+  /**
+   * Collect one provider stream attempt without yielding to the client yet,
+   * unless we already started emitting (partial content commits us).
+   *
+   * Returns:
+   * - success: buffered events ending in `done` (caller should yield them)
+   * - failBeforeContent: silent failure — try next provider
+   * - failAfterContent: already yielded partial deltas; terminal error must be sent
+   */
+  private async collectProviderStream(
+    provider: AiProvider,
+    request: AiGenerateRequest
+  ): Promise<
+    | { kind: "success"; events: AiStreamEvent[] }
+    | { kind: "failBeforeContent"; error: Extract<AiStreamEvent, { type: "error" }> }
+    | { kind: "failAfterContent"; events: AiStreamEvent[]; error: Extract<AiStreamEvent, { type: "error" }> }
+  > {
+    const events: AiStreamEvent[] = [];
+    let sawDelta = false;
+
+    const runNative = async () => {
+      if (typeof provider.streamGenerate !== "function") return null;
+      for await (const event of provider.streamGenerate(request)) {
+        if (event.type === "delta") {
+          sawDelta = true;
+          events.push(event);
+        } else if (event.type === "done") {
+          events.push(event);
+          return { kind: "success" as const, events };
+        } else if (event.type === "error") {
+          if (sawDelta) {
+            return { kind: "failAfterContent" as const, events, error: event };
+          }
+          return { kind: "failBeforeContent" as const, error: event };
+        }
+      }
+      if (events.some((e) => e.type === "done")) {
+        return { kind: "success" as const, events };
+      }
+      if (sawDelta) {
+        return {
+          kind: "failAfterContent" as const,
+          events,
+          error: {
+            type: "error" as const,
+            code: "PROVIDER_UNAVAILABLE" as const,
+            message: "Stream ended without completion",
+            retryable: true,
+          },
+        };
+      }
+      return {
+        kind: "failBeforeContent" as const,
+        error: {
+          type: "error" as const,
+          code: "PROVIDER_UNAVAILABLE" as const,
+          message: "Empty stream from provider",
+          retryable: true,
+        },
+      };
+    };
+
+    if (typeof provider.streamGenerate === "function") {
+      return (await runNative())!;
+    }
+
+    // Synthetic stream from non-streaming generate — no partial tokens until success
+    try {
+      const res = await provider.generate(request);
+      const synthetic: AiStreamEvent[] = [];
+      if (res.content) synthetic.push({ type: "delta", content: res.content });
+      synthetic.push({
+        type: "done",
+        id: res.id,
+        model: res.model,
+        provider: res.provider,
+        content: res.content,
+        usage: res.usage,
+        finishReason: res.finishReason,
+        latencyMs: res.latencyMs,
+      });
+      return { kind: "success", events: synthetic };
+    } catch (e) {
+      const err = e as AiProviderError;
+      return {
+        kind: "failBeforeContent",
+        error: {
+          type: "error",
+          code: err.code || "UNKNOWN",
+          message: err.message || "Provider error",
+          retryable: err.retryable ?? false,
+        },
+      };
+    }
+  }
+
+  /**
+   * Stream tokens from the primary provider (or fallback chain).
+   *
+   * Production rules:
+   * - Never emit a terminal `error` event if another provider can still succeed.
+   * - If a provider fails before any content, try the next candidate silently.
+   * - If a provider fails after emitting content, do not switch (client already
+   *   has partial tokens from that provider); emit the error once.
+   * - Only after all candidates fail is a single `error` event yielded.
+   */
+  async *streamGenerate(
+    req: AiGenerateRequest,
+    options?: { allowFallback?: boolean }
+  ): AsyncGenerator<AiStreamEvent, void, unknown> {
+    this.validateInput(req);
+
+    const ordered: AiProvider[] = [];
+    const primary = this.getPrimaryProvider();
+    ordered.push(primary);
+
+    if (options?.allowFallback !== false) {
+      const candidates = [this.fallback, "xai", "google", "anthropic", "openai", "mock"].filter(
+        (name, index, all): name is string =>
+          Boolean(name) && name !== this.primary && all.indexOf(name) === index
+      );
+      for (const name of candidates) {
+        if (name === "mock" && process.env.NODE_ENV === "production") continue;
+        const provider = this.providers.get(name);
+        if (!provider) continue;
+        try {
+          if (!(await provider.isAvailable())) continue;
+        } catch {
+          continue;
+        }
+        ordered.push(provider);
+      }
+    }
+
+    let lastError: Extract<AiStreamEvent, { type: "error" }> | null = null;
+
+    for (let i = 0; i < ordered.length; i++) {
+      const provider = ordered[i];
+      const request =
+        provider.name === this.primary ? req : this.fallbackRequest(provider.name, req);
+
+      const result = await this.collectProviderStream(provider, request);
+
+      if (result.kind === "success") {
+        for (const event of result.events) {
+          yield event;
+        }
+        return;
+      }
+
+      if (result.kind === "failAfterContent") {
+        // Partial content already collected from this provider — commit to it.
+        for (const event of result.events) {
+          yield event;
+        }
+        yield result.error;
+        return;
+      }
+
+      // failBeforeContent — keep last error, try next silently
+      lastError = result.error;
+    }
+
+    yield lastError || {
+      type: "error",
+      code: "PROVIDER_UNAVAILABLE",
+      message: "All AI providers failed",
+      retryable: true,
+    };
   }
 }
 
