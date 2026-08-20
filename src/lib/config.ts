@@ -5,7 +5,7 @@
  */
 
 export const APP_NAME = "ForgeAI";
-export const APP_VERSION = "1.1.0";
+export const APP_VERSION = "1.3.0";
 
 export const CREDIT_COSTS = {
   generate: { basic: 1, standard: 2, advanced: 5 },
@@ -93,6 +93,69 @@ export const PLANS = {
 
 export type PlanTier = keyof typeof PLANS;
 
+export type ModelProviderId = "openai" | "anthropic" | "google" | "xai";
+
+export interface ModelCatalogEntry {
+  id: string;
+  provider: ModelProviderId;
+  label: string;
+  /** Minimum plan tier that includes this model (PRO/BUSINESS = all). */
+  minPlan: PlanTier;
+}
+
+/** Canonical model list for playground + docs (server still enforces allow-lists). */
+export const MODEL_CATALOG: ModelCatalogEntry[] = [
+  { id: "gpt-4o-mini", provider: "openai", label: "GPT-4o Mini", minPlan: "FREE" },
+  { id: "gpt-4o", provider: "openai", label: "GPT-4o", minPlan: "STARTER" },
+  { id: "claude-3-haiku", provider: "anthropic", label: "Claude 3 Haiku", minPlan: "FREE" },
+  { id: "claude-3-5-sonnet", provider: "anthropic", label: "Claude 3.5 Sonnet", minPlan: "STARTER" },
+  { id: "claude-3-5-haiku-latest", provider: "anthropic", label: "Claude 3.5 Haiku", minPlan: "PRO" },
+  { id: "gemini-2.5-flash-lite", provider: "google", label: "Gemini 2.5 Flash Lite", minPlan: "FREE" },
+  { id: "gemini-2.5-flash", provider: "google", label: "Gemini 2.5 Flash", minPlan: "FREE" },
+  { id: "gemini-2.5-pro", provider: "google", label: "Gemini 2.5 Pro", minPlan: "STARTER" },
+  { id: "gemini-3.1-flash-lite", provider: "google", label: "Gemini 3.1 Flash Lite", minPlan: "FREE" },
+  { id: "gemini-3.5-flash", provider: "google", label: "Gemini 3.5 Flash", minPlan: "STARTER" },
+  { id: "grok-3-mini", provider: "xai", label: "Grok 3 Mini", minPlan: "FREE" },
+  { id: "grok-3", provider: "xai", label: "Grok 3", minPlan: "STARTER" },
+  { id: "grok-2", provider: "xai", label: "Grok 2", minPlan: "STARTER" },
+];
+
+const PLAN_RANK: Record<PlanTier, number> = {
+  FREE: 0,
+  STARTER: 1,
+  PRO: 2,
+  BUSINESS: 3,
+};
+
+export function providerLabel(provider: ModelProviderId | string): string {
+  switch (provider) {
+    case "openai":
+      return "OpenAI";
+    case "anthropic":
+      return "Anthropic";
+    case "google":
+      return "Google Gemini";
+    case "xai":
+      return "xAI / Grok";
+    case "mock":
+      return "Mock (dev)";
+    default:
+      return provider;
+  }
+}
+
+export function getModelsForPlan(planTier: PlanTier): ModelCatalogEntry[] {
+  return MODEL_CATALOG.filter((m) => isModelAllowed(planTier, m.id));
+}
+
+export function getModelEntry(modelId: string): ModelCatalogEntry | undefined {
+  return MODEL_CATALOG.find((m) => m.id === modelId);
+}
+
+export function planMeetsMinimum(userPlan: PlanTier, minPlan: PlanTier): boolean {
+  return PLAN_RANK[userPlan] >= PLAN_RANK[minPlan];
+}
+
 export const CREDIT_PACKS = [
   { id: "credits_500", credits: 500, priceCents: 500, label: "500 credits" },
   { id: "credits_2000", credits: 2000, priceCents: 1800, label: "2,000 credits" },
@@ -108,7 +171,10 @@ export const AI_DEFAULTS = {
   maxOutputTokensDefault: 4096,
 } as const;
 
-export function getCreditCost(operation: "generate" | "analyze", complexity: "basic" | "standard" | "advanced" = "standard"): number {
+export function getCreditCost(
+  operation: "generate" | "analyze",
+  complexity: "basic" | "standard" | "advanced" = "standard"
+): number {
   const costs = CREDIT_COSTS[operation];
   return costs[complexity] ?? CREDIT_COSTS.default;
 }
