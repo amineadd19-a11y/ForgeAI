@@ -4,7 +4,7 @@
 
 Secure API · Credits · Subscriptions · Usage-based billing · Provider-agnostic AI gateway
 
-> **v1.1** — Native xAI / Grok support, smarter fallbacks, and a redesigned product landing page.
+> **v1.2** — Streaming generate (`stream: true`), native xAI / Grok, redesigned landing page.
 
 ## Mission
 
@@ -15,6 +15,7 @@ ForgeAI provides a production-ready AI processing layer with:
 - Real credit system with atomic deductions
 - Subscription plans + one-time credit packs
 - Provider abstraction (swap providers without rewriting app logic)
+- **Streaming responses** (SSE) on generate
 - Rate limiting, usage tracking, request history
 - Dashboard, playground, docs
 - Stripe billing with webhook-only credit grants
@@ -24,13 +25,13 @@ We do **not** resell a third-party API key. Value is in the infrastructure, bill
 
 ## Supported providers
 
-| Provider   | Env key          | Example models              |
-|------------|------------------|-----------------------------|
-| OpenAI     | `OPENAI_API_KEY` | `gpt-4o-mini`, `gpt-4o`     |
-| Anthropic  | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` |
-| Google     | `GEMINI_API_KEY` | `gemini-2.5-flash-lite`     |
-| **xAI**    | `XAI_API_KEY`    | `grok-3-mini`, `grok-3`     |
-| Mock       | —                | Local / test only           |
+| Provider   | Env key             | Example models              | Streaming |
+|------------|---------------------|-----------------------------|-----------|
+| OpenAI     | `OPENAI_API_KEY`    | `gpt-4o-mini`, `gpt-4o`     | Yes       |
+| Anthropic  | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest`   | Yes       |
+| Google     | `GEMINI_API_KEY`    | `gemini-2.5-flash-lite`     | Yes       |
+| **xAI**    | `XAI_API_KEY`       | `grok-3-mini`, `grok-3`     | Yes       |
+| Mock       | —                   | Local / test only           | Yes       |
 
 Set `AI_PROVIDER` to choose the primary. Set `AI_FALLBACK_PROVIDER` (default `xai`) for automatic failover.
 
@@ -38,7 +39,7 @@ Set `AI_PROVIDER` to choose the primary. Set `AI_FALLBACK_PROVIDER` (default `xa
 
 ```
 User → Dashboard / API → Auth (API Key) → Credits & Rate Limits
-     → AI Gateway → Configured Provider → Result
+     → AI Gateway → Configured Provider → Result (JSON or SSE stream)
      → Usage recorded · Credits charged only on success
 ```
 
@@ -83,7 +84,7 @@ npm run quality-gate
 Authorization: Bearer fa_live_...
 ```
 
-### Generate
+### Generate (JSON)
 
 ```bash
 curl -X POST https://YOUR_DOMAIN/api/v1/ai/generate \
@@ -92,7 +93,36 @@ curl -X POST https://YOUR_DOMAIN/api/v1/ai/generate \
   -d '{"prompt":"Explain rate limiting in one sentence.","model":"grok-3-mini","complexity":"basic"}'
 ```
 
-Credits are **never** charged if the request does not reach a successful provider response.
+### Generate (streaming SSE)
+
+Pass `"stream": true`. Response is `text/event-stream`:
+
+```bash
+curl -N -X POST https://YOUR_DOMAIN/api/v1/ai/generate \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Write a short haiku about APIs.","stream":true,"complexity":"basic"}'
+```
+
+Event shapes:
+
+```text
+data: {"type":"meta","requestId":"...","model":"..."}
+
+data: {"type":"delta","content":"Hello","requestId":"..."}
+
+data: {"type":"done","id":"...","requestId":"...","content":"...","usage":{...},"latencyMs":123}
+
+data: [DONE]
+```
+
+On failure during the stream:
+
+```text
+data: {"type":"error","code":"PROVIDER_UNAVAILABLE","message":"...","retryable":true,"requestId":"..."}
+```
+
+Credits are **never** charged until a successful `done` event (JSON path: successful provider response).
 
 ## Plans
 
