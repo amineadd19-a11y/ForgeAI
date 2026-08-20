@@ -4,10 +4,37 @@ import {
   AiProvider,
   AiProviderError,
   AiStreamEvent,
+  AiStreamOptions,
 } from "../types";
 import { mapHttpErrorToProviderError, parseOpenAiCompatibleSse } from "../stream-utils";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
+
+function linkAbortSignals(timeoutMs: number, external?: AbortSignal): {
+  signal: AbortSignal;
+  cleanup: () => void;
+  wasExternalAbort: () => boolean;
+} {
+  const controller = new AbortController();
+  let externalAborted = false;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternal = () => {
+    externalAborted = true;
+    controller.abort();
+  };
+  if (external) {
+    if (external.aborted) onExternal();
+    else external.addEventListener("abort", onExternal, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeout);
+      if (external) external.removeEventListener("abort", onExternal);
+    },
+    wasExternalAbort: () => externalAborted || Boolean(external?.aborted),
+  };
+}
 
 export class OpenAIProvider implements AiProvider {
   name = "openai";
@@ -153,7 +180,12 @@ export class OpenAIProvider implements AiProvider {
     }
   }
 
-  async *streamGenerate(req: AiGenerateRequest): AsyncGenerator<AiStreamEvent, void, unknown> {
+  async *streamGenerate(
+    req: AiGenerateRequest,
+    options?: AiStreamOptions
+  ): AsyncGenerator<AiStreamEvent, void, unknown> {
+    if (options?.signal?.aborted) return;
+
     if (!this.apiKey) {
       yield {
         type: "error",
@@ -177,9 +209,8 @@ export class OpenAIProvider implements AiProvider {
     }
 
     const start = Date.now();
-    const controller = new AbortController();
     const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || 60000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const { signal, cleanup, wasExternalAbort } = linkAbortSignals(timeoutMs, options?.signal);
 
     try {
       const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
@@ -198,11 +229,13 @@ export class OpenAIProvider implements AiProvider {
           stream: true,
           stream_options: { include_usage: true },
         }),
-        signal: controller.signal,
+        signal,
       });
 
+      if (wasExternalAbort()) return;
+
       if (!res.ok) {
-        clearTimeout(timeout);
+        cleanup();
         const body = await res.text();
         const err = mapHttpErrorToProviderError(res.status, body, this.name, "OpenAI");
         yield { type: "error", code: err.code, message: err.message, retryable: err.retryable };
@@ -210,7 +243,7 @@ export class OpenAIProvider implements AiProvider {
       }
 
       if (!res.body) {
-        clearTimeout(timeout);
+        cleanup();
         yield {
           type: "error",
           code: "PROVIDER_UNAVAILABLE",
@@ -224,10 +257,12 @@ export class OpenAIProvider implements AiProvider {
         provider: this.name,
         model,
         start,
+        signal: options?.signal,
       });
-      clearTimeout(timeout);
+      cleanup();
     } catch (e: unknown) {
-      clearTimeout(timeout);
+      cleanup();
+      if (wasExternalAbort() || options?.signal?.aborted) return;
       if ((e as Error).name === "AbortError") {
         yield { type: "error", code: "TIMEOUT", message: "Request timed out", retryable: true };
         return;
