@@ -14,7 +14,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          # Only enable npm cache when a lockfile is present (cache requires one).
+          # Repo may use npm install without a committed package-lock.json.
+          cache: ${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock') != '' && 'npm' || '' }}
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
