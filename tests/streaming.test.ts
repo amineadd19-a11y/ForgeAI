@@ -38,7 +38,9 @@ describe("AI Gateway streamGenerate", () => {
       events.push(ev);
     }
     const done = events.find((e) => e.type === "done");
+    const errors = events.filter((e) => e.type === "error");
     expect(done).toBeTruthy();
+    expect(errors.length).toBe(0);
     if (done && done.type === "done") {
       expect(done.content).toContain("gateway stream");
       expect(done.provider).toBe("mock");
@@ -55,6 +57,16 @@ describe("AI Gateway streamGenerate", () => {
         /* drain */
       }
     }).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
+  it("successful stream never emits error events", async () => {
+    const { getAiGateway } = await import("../src/lib/ai/gateway");
+    const events = [];
+    for await (const ev of getAiGateway().streamGenerate({ prompt: "clean stream" })) {
+      events.push(ev);
+    }
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(events.some((e) => e.type === "done")).toBe(true);
   });
 });
 
