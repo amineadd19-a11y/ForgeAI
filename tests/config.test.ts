@@ -4,6 +4,10 @@ import {
   isModelAllowed,
   PLANS,
   CREDIT_COSTS,
+  MODEL_CATALOG,
+  getModelsForPlan,
+  getModelEntry,
+  providerLabel,
 } from "../src/lib/config";
 
 describe("credit costs", () => {
@@ -33,5 +37,36 @@ describe("plans", () => {
     expect(isModelAllowed("FREE", "gpt-4o")).toBe(false);
     expect(isModelAllowed("PRO", "gpt-4o")).toBe(true);
     expect(isModelAllowed("BUSINESS", "any-model")).toBe(true);
+  });
+});
+
+describe("MODEL_CATALOG", () => {
+  it("includes OpenAI, Anthropic, Gemini, and Grok models", () => {
+    const providers = new Set(MODEL_CATALOG.map((m) => m.provider));
+    expect(providers.has("openai")).toBe(true);
+    expect(providers.has("anthropic")).toBe(true);
+    expect(providers.has("google")).toBe(true);
+    expect(providers.has("xai")).toBe(true);
+  });
+
+  it("filters models by plan for playground selector", () => {
+    const free = getModelsForPlan("FREE");
+    expect(free.every((m) => isModelAllowed("FREE", m.id))).toBe(true);
+    expect(free.some((m) => m.id === "gpt-4o-mini")).toBe(true);
+    expect(free.some((m) => m.id === "gpt-4o")).toBe(false);
+
+    const starter = getModelsForPlan("STARTER");
+    expect(starter.some((m) => m.id === "gpt-4o")).toBe(true);
+    expect(starter.some((m) => m.id === "grok-3")).toBe(true);
+
+    const pro = getModelsForPlan("PRO");
+    expect(pro.length).toBe(MODEL_CATALOG.length);
+  });
+
+  it("resolves model metadata and provider labels", () => {
+    const entry = getModelEntry("grok-3-mini");
+    expect(entry?.provider).toBe("xai");
+    expect(providerLabel("xai")).toContain("Grok");
+    expect(providerLabel("openai")).toBe("OpenAI");
   });
 });
