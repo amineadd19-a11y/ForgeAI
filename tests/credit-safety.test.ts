@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { isModelAllowed, getModelsForPlan, PLANS } from "../src/lib/config";
+import { isModelAllowed, getModelsForPlan, PLANS, MODEL_CATALOG } from "../src/lib/config";
 import { getCreditCost } from "../src/lib/config";
 
 describe("plan-filtered model catalog (playground)", () => {
@@ -10,8 +10,21 @@ describe("plan-filtered model catalog (playground)", () => {
     expect(isModelAllowed("FREE", "gpt-4o")).toBe(false);
   });
 
-  it("server-side isModelAllowed remains authoritative for unauthorized models", () => {
-    // Matches API behavior: 403 MODEL_NOT_ALLOWED when plan lacks model
+  it("STARTER and PRO see expanded catalogs", () => {
+    const starter = getModelsForPlan("STARTER");
+    expect(starter.some((m) => m.id === "gpt-4o")).toBe(true);
+    expect(starter.some((m) => m.id === "grok-3")).toBe(true);
+    expect(getModelsForPlan("PRO").length).toBe(MODEL_CATALOG.length);
+    expect(getModelsForPlan("BUSINESS").length).toBe(MODEL_CATALOG.length);
+  });
+
+  it("unknown plan key is not a valid PlanTier — callers must fail safe", () => {
+    // Playground server component only accepts known PLANS keys; invalid tier falls back to FREE.
+    const maybe = "ENTERPRISE" as keyof typeof PLANS;
+    expect(PLANS[maybe]).toBeUndefined();
+  });
+
+  it("server-side isModelAllowed remains authoritative for unauthorized models (403)", () => {
     expect(isModelAllowed("FREE", "gpt-4o")).toBe(false);
     expect(isModelAllowed("STARTER", "gpt-4o")).toBe(true);
     expect(isModelAllowed("PRO", "gpt-4o")).toBe(true);
@@ -38,7 +51,7 @@ describe("stream abort semantics (gateway signal)", () => {
     process.env.AI_PROVIDER = "mock";
   });
 
-  it("aborted signal yields no terminal done event", async () => {
+  it("pre-aborted signal yields no terminal done or error", async () => {
     const { getAiGateway } = await import("../src/lib/ai/gateway");
     const ac = new AbortController();
     ac.abort();
@@ -51,6 +64,21 @@ describe("stream abort semantics (gateway signal)", () => {
     }
     expect(events.some((e) => e.type === "done")).toBe(false);
     expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  it("abort mid-stream yields no done (incomplete → zero charge path)", async () => {
+    const { getAiGateway } = await import("../src/lib/ai/gateway");
+    const ac = new AbortController();
+    const events = [];
+    const iter = getAiGateway().streamGenerate({ prompt: "abort me please now" }, { signal: ac.signal });
+    for await (const ev of iter) {
+      events.push(ev);
+      if (ev.type === "delta") {
+        ac.abort();
+      }
+    }
+    expect(events.some((e) => e.type === "delta")).toBe(true);
+    expect(events.some((e) => e.type === "done")).toBe(false);
   });
 
   it("successful stream still emits single done without error", async () => {
