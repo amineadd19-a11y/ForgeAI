@@ -157,7 +157,7 @@ export class AiGateway {
 
     const runNative = async () => {
       if (typeof provider.streamGenerate !== "function") return null;
-      for await (const event of provider.streamGenerate(request)) {
+      for await (const event of provider.streamGenerate(request, { signal })) {
         if (signal?.aborted) return { kind: "aborted" as const };
         if (event.type === "delta") {
           sawDelta = true;
@@ -237,6 +237,11 @@ export class AiGateway {
   /**
    * Stream tokens from the primary provider (or fallback chain).
    * Pass `signal` to stop collecting/yielding when the client aborts.
+   *
+   * Limitation (Next.js / undici): `req.signal` aborts when the client disconnects
+   * on Node runtimes that propagate it; ReadableStream.cancel() also fires when
+   * the consumer cancels the body. Combined, these are the strongest reliable
+   * hooks without custom TCP-level probing.
    */
   async *streamGenerate(
     req: AiGenerateRequest,
