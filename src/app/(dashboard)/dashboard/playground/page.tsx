@@ -14,7 +14,7 @@ export default async function PlaygroundPage() {
   const userId = session?.user?.id;
 
   let planTier: PlanTier = "FREE";
-  let planName = PLANS.FREE.name;
+  let planName: string = PLANS.FREE.name;
 
   if (userId) {
     const subscription = await prisma.subscription.findUnique({
