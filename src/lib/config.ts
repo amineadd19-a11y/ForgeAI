@@ -5,7 +5,7 @@
  */
 
 export const APP_NAME = "ForgeAI";
-export const APP_VERSION = "1.0.0";
+export const APP_VERSION = "1.1.0";
 
 export const CREDIT_COSTS = {
   generate: { basic: 1, standard: 2, advanced: 5 },
@@ -19,6 +19,7 @@ const FREE_MODELS = [
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
   "gemini-3.1-flash-lite",
+  "grok-3-mini",
 ] as string[];
 
 const STARTER_MODELS = [
@@ -27,6 +28,8 @@ const STARTER_MODELS = [
   "claude-3-5-sonnet",
   "gemini-2.5-pro",
   "gemini-3.5-flash",
+  "grok-3",
+  "grok-2",
 ] as string[];
 
 export const PLANS = {
@@ -42,7 +45,7 @@ export const PLANS = {
     maxInputTokens: 2048,
     maxOutputTokens: 1024,
     allowedModels: FREE_MODELS,
-    features: ["Basic generation", "API access", "Community support"],
+    features: ["Basic generation", "API access", "Community support", "Grok mini"],
   },
   STARTER: {
     tier: "STARTER" as const,
@@ -56,7 +59,7 @@ export const PLANS = {
     maxInputTokens: 8192,
     maxOutputTokens: 4096,
     allowedModels: STARTER_MODELS,
-    features: ["Everything in Free", "Higher rate limits", "Priority support", "Usage analytics"],
+    features: ["Everything in Free", "Higher rate limits", "Priority support", "Usage analytics", "Grok models"],
   },
   PRO: {
     tier: "PRO" as const,

@@ -2,6 +2,7 @@ import { AI_DEFAULTS } from "../config";
 import { OpenAIProvider } from "./providers/openai";
 import { AnthropicProvider } from "./providers/anthropic";
 import { GoogleProvider } from "./providers/google";
+import { XaiProvider } from "./providers/xai";
 import { MockProvider } from "./providers/mock";
 import { AiGenerateRequest, AiGenerateResponse, AiProvider, AiProviderError } from "./types";
 
@@ -13,11 +14,12 @@ export class AiGateway {
   constructor() {
     const providerName = (process.env.AI_PROVIDER || "openai").toLowerCase();
     this.primary = providerName;
-    this.fallback = (process.env.AI_FALLBACK_PROVIDER || "google").toLowerCase();
+    this.fallback = (process.env.AI_FALLBACK_PROVIDER || "xai").toLowerCase();
 
     this.providers.set("openai", new OpenAIProvider());
     this.providers.set("anthropic", new AnthropicProvider());
     this.providers.set("google", new GoogleProvider());
+    this.providers.set("xai", new XaiProvider());
     this.providers.set("mock", new MockProvider());
   }
 
@@ -35,11 +37,11 @@ export class AiGateway {
     }
     const primaryAvailable = status[this.primary] ?? false;
     const fallbackAvailable = this.fallback ? status[this.fallback] ?? false : false;
-    const googleAvailable = status.google ?? false;
+    const anyAvailable = Object.values(status).some(Boolean);
     const localMockAvailable = process.env.NODE_ENV !== "production" && status.mock;
     return {
       primary: this.primary,
-      available: primaryAvailable || fallbackAvailable || googleAvailable || Boolean(localMockAvailable),
+      available: primaryAvailable || fallbackAvailable || anyAvailable || Boolean(localMockAvailable),
       providers: status,
     };
   }
@@ -66,6 +68,9 @@ export class AiGateway {
     if (providerName === "anthropic") {
       return { ...req, model: process.env.AI_FALLBACK_MODEL || "claude-3-5-haiku-latest" };
     }
+    if (providerName === "xai") {
+      return { ...req, model: process.env.XAI_MODEL || "grok-3-mini" };
+    }
     return req;
   }
 
@@ -83,7 +88,7 @@ export class AiGateway {
       const error = primaryError as AiProviderError;
       if (options?.allowFallback === false) throw error;
 
-      const candidates = [this.fallback, "google", "anthropic"].filter(
+      const candidates = [this.fallback, "xai", "google", "anthropic", "openai"].filter(
         (name, index, all): name is string => Boolean(name) && name !== this.primary && all.indexOf(name) === index
       );
 

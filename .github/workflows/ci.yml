@@ -14,7 +14,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          # Intentionally no cache: the repository does not commit package-lock.json.
+          # setup-node npm cache requires a lockfile and fails the job without one.
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi

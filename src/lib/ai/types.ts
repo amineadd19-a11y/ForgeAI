@@ -51,4 +51,4 @@ export interface AiProvider {
   listModels(): Promise<string[]>;
 }
 
-export type ProviderName = "openai" | "anthropic" | "google" | "mock";
+export type ProviderName = "openai" | "anthropic" | "google" | "xai" | "mock";
