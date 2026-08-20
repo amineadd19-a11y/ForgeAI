@@ -1,10 +1,11 @@
 import { prisma } from "./db";
-import { CreditTransactionType } from "@prisma/client";
+import { CreditTransactionType, Prisma } from "@prisma/client";
 import { getCreditCost } from "./config";
 
 /**
  * Atomic credit operations.
  * Uses database transactions to prevent negative balances and race conditions.
+ * USAGE rows with the same referenceId are unique at the DB level (@@unique([type, referenceId])).
  */
 
 export async function getBalance(userId: string): Promise<number> {
@@ -27,6 +28,7 @@ export async function ensureBalanceRecord(userId: string): Promise<void> {
  * Never allows negative balance.
  * When `referenceId` is provided, a prior USAGE transaction with the same
  * referenceId is treated as already charged (idempotent — no double deduction).
+ * Concurrent duplicate inserts are rejected by @@unique([type, referenceId]).
  */
 export async function deductCredits(
   userId: string,
@@ -38,9 +40,70 @@ export async function deductCredits(
     return { success: false, balanceAfter: await getBalance(userId) };
   }
 
-  return prisma.$transaction(async (tx) => {
-    if (referenceId) {
-      const existing = await tx.creditTransaction.findFirst({
+  try {
+    return await prisma.$transaction(async (tx) => {
+      if (referenceId) {
+        const existing = await tx.creditTransaction.findFirst({
+          where: {
+            userId,
+            referenceId,
+            type: CreditTransactionType.USAGE,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (existing) {
+          return {
+            success: true,
+            balanceAfter: existing.balanceAfter,
+            transactionId: existing.id,
+            duplicate: true,
+          };
+        }
+      }
+
+      const current = await tx.creditBalance.findUnique({
+        where: { userId },
+      });
+
+      const balance = current?.balance ?? 0;
+      if (balance < amount) {
+        return { success: false, balanceAfter: balance };
+      }
+
+      const newBalance = balance - amount;
+
+      await tx.creditBalance.upsert({
+        where: { userId },
+        create: { userId, balance: newBalance },
+        update: { balance: newBalance },
+      });
+
+      const txRecord = await tx.creditTransaction.create({
+        data: {
+          userId,
+          type: CreditTransactionType.USAGE,
+          amount: -amount,
+          balanceAfter: newBalance,
+          description,
+          referenceId,
+        },
+      });
+
+      return {
+        success: true,
+        balanceAfter: newBalance,
+        transactionId: txRecord.id,
+        duplicate: false,
+      };
+    });
+  } catch (e) {
+    // Concurrent insert with same (type, referenceId) — treat as already charged
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002" &&
+      referenceId
+    ) {
+      const existing = await prisma.creditTransaction.findFirst({
         where: {
           userId,
           referenceId,
@@ -56,43 +119,10 @@ export async function deductCredits(
           duplicate: true,
         };
       }
+      return { success: true, balanceAfter: await getBalance(userId), duplicate: true };
     }
-
-    const current = await tx.creditBalance.findUnique({
-      where: { userId },
-    });
-
-    const balance = current?.balance ?? 0;
-    if (balance < amount) {
-      return { success: false, balanceAfter: balance };
-    }
-
-    const newBalance = balance - amount;
-
-    await tx.creditBalance.upsert({
-      where: { userId },
-      create: { userId, balance: newBalance },
-      update: { balance: newBalance },
-    });
-
-    const txRecord = await tx.creditTransaction.create({
-      data: {
-        userId,
-        type: CreditTransactionType.USAGE,
-        amount: -amount,
-        balanceAfter: newBalance,
-        description,
-        referenceId,
-      },
-    });
-
-    return {
-      success: true,
-      balanceAfter: newBalance,
-      transactionId: txRecord.id,
-      duplicate: false,
-    };
-  });
+    throw e;
+  }
 }
 
 /**
