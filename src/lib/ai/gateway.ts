@@ -140,29 +140,25 @@ export class AiGateway {
     }
   }
 
-  /**
-   * Collect one provider stream attempt without yielding to the client yet,
-   * unless we already started emitting (partial content commits us).
-   *
-   * Returns:
-   * - success: buffered events ending in `done` (caller should yield them)
-   * - failBeforeContent: silent failure — try next provider
-   * - failAfterContent: already yielded partial deltas; terminal error must be sent
-   */
   private async collectProviderStream(
     provider: AiProvider,
-    request: AiGenerateRequest
+    request: AiGenerateRequest,
+    signal?: AbortSignal
   ): Promise<
     | { kind: "success"; events: AiStreamEvent[] }
+    | { kind: "aborted" }
     | { kind: "failBeforeContent"; error: Extract<AiStreamEvent, { type: "error" }> }
     | { kind: "failAfterContent"; events: AiStreamEvent[]; error: Extract<AiStreamEvent, { type: "error" }> }
   > {
+    if (signal?.aborted) return { kind: "aborted" };
+
     const events: AiStreamEvent[] = [];
     let sawDelta = false;
 
     const runNative = async () => {
       if (typeof provider.streamGenerate !== "function") return null;
-      for await (const event of provider.streamGenerate(request)) {
+      for await (const event of provider.streamGenerate(request, { signal })) {
+        if (signal?.aborted) return { kind: "aborted" as const };
         if (event.type === "delta") {
           sawDelta = true;
           events.push(event);
@@ -176,6 +172,7 @@ export class AiGateway {
           return { kind: "failBeforeContent" as const, error: event };
         }
       }
+      if (signal?.aborted) return { kind: "aborted" as const };
       if (events.some((e) => e.type === "done")) {
         return { kind: "success" as const, events };
       }
@@ -206,9 +203,9 @@ export class AiGateway {
       return (await runNative())!;
     }
 
-    // Synthetic stream from non-streaming generate — no partial tokens until success
     try {
       const res = await provider.generate(request);
+      if (signal?.aborted) return { kind: "aborted" };
       const synthetic: AiStreamEvent[] = [];
       if (res.content) synthetic.push({ type: "delta", content: res.content });
       synthetic.push({
@@ -223,6 +220,7 @@ export class AiGateway {
       });
       return { kind: "success", events: synthetic };
     } catch (e) {
+      if (signal?.aborted) return { kind: "aborted" };
       const err = e as AiProviderError;
       return {
         kind: "failBeforeContent",
@@ -238,19 +236,21 @@ export class AiGateway {
 
   /**
    * Stream tokens from the primary provider (or fallback chain).
+   * Pass `signal` to stop collecting/yielding when the client aborts.
    *
-   * Production rules:
-   * - Never emit a terminal `error` event if another provider can still succeed.
-   * - If a provider fails before any content, try the next candidate silently.
-   * - If a provider fails after emitting content, do not switch (client already
-   *   has partial tokens from that provider); emit the error once.
-   * - Only after all candidates fail is a single `error` event yielded.
+   * Limitation (Next.js / undici): `req.signal` aborts when the client disconnects
+   * on Node runtimes that propagate it; ReadableStream.cancel() also fires when
+   * the consumer cancels the body. Combined, these are the strongest reliable
+   * hooks without custom TCP-level probing.
    */
   async *streamGenerate(
     req: AiGenerateRequest,
-    options?: { allowFallback?: boolean }
+    options?: { allowFallback?: boolean; signal?: AbortSignal }
   ): AsyncGenerator<AiStreamEvent, void, unknown> {
     this.validateInput(req);
+    const signal = options?.signal;
+
+    if (signal?.aborted) return;
 
     const ordered: AiProvider[] = [];
     const primary = this.getPrimaryProvider();
@@ -277,31 +277,37 @@ export class AiGateway {
     let lastError: Extract<AiStreamEvent, { type: "error" }> | null = null;
 
     for (let i = 0; i < ordered.length; i++) {
+      if (signal?.aborted) return;
+
       const provider = ordered[i];
       const request =
         provider.name === this.primary ? req : this.fallbackRequest(provider.name, req);
 
-      const result = await this.collectProviderStream(provider, request);
+      const result = await this.collectProviderStream(provider, request, signal);
+
+      if (result.kind === "aborted") return;
 
       if (result.kind === "success") {
         for (const event of result.events) {
+          if (signal?.aborted) return;
           yield event;
         }
         return;
       }
 
       if (result.kind === "failAfterContent") {
-        // Partial content already collected from this provider — commit to it.
         for (const event of result.events) {
+          if (signal?.aborted) return;
           yield event;
         }
-        yield result.error;
+        if (!signal?.aborted) yield result.error;
         return;
       }
 
-      // failBeforeContent — keep last error, try next silently
       lastError = result.error;
     }
+
+    if (signal?.aborted) return;
 
     yield lastError || {
       type: "error",

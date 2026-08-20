@@ -175,6 +175,9 @@ model CreditTransaction {
   @@index([userId, createdAt])
   @@index([referenceId])
   @@index([type])
+  // Enforce at most one USAGE (or any type) row per referenceId when set.
+  // PostgreSQL UNIQUE allows multiple NULLs for referenceId (no-ref rows).
+  @@unique([type, referenceId])
 }
 
 model ApiKey {

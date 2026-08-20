@@ -40,6 +40,50 @@ function sseEncode(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
 
+function resolvePlanTier(raw: string | undefined | null): PlanTier {
+  if (raw && raw in PLANS) return raw as PlanTier;
+  return "FREE";
+}
+
+/** Atomically claim a PENDING request as client-aborted. Returns false if already finalized. */
+async function claimClientAbort(params: {
+  requestId: string;
+  userId: string;
+  apiKeyId: string | null;
+  start: number;
+}): Promise<boolean> {
+  const { requestId, userId, apiKeyId, start } = params;
+  const claimed = await prisma.aiRequest.updateMany({
+    where: { requestId, status: "PENDING" },
+    data: {
+      status: "FAILED",
+      errorMessage: "Client aborted",
+      completedAt: new Date(),
+      latencyMs: Date.now() - start,
+      creditsCharged: 0,
+    },
+  });
+  if (claimed.count === 0) return false;
+  try {
+    await prisma.usageEvent.create({
+      data: {
+        userId,
+        apiKeyId,
+        endpoint: "/api/v1/ai/generate",
+        method: "POST",
+        statusCode: 499,
+        creditsUsed: 0,
+        requestId,
+        errorCode: "CLIENT_ABORTED",
+        latencyMs: Date.now() - start,
+      },
+    });
+  } catch {
+    // requestId unique — concurrent path may have written usage already
+  }
+  return true;
+}
+
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   const start = Date.now();
@@ -65,7 +109,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const planTier: PlanTier = (subscription?.plan?.tier as PlanTier) || "FREE";
+  const planTier = resolvePlanTier(subscription?.plan?.tier);
   const plan = PLANS[planTier];
   const rate = await checkRateLimit({
     userId,
@@ -210,10 +254,29 @@ export async function POST(req: NextRequest) {
     complexity: body.complexity,
   };
 
-  // ---------- Streaming path ----------
   if (body.stream) {
     const encoder = new TextEncoder();
     let clientAborted = false;
+    const streamAbort = new AbortController();
+
+    const isAborted = () =>
+      clientAborted || streamAbort.signal.aborted || req.signal.aborted;
+
+    const markAborted = () => {
+      if (clientAborted) return;
+      clientAborted = true;
+      try {
+        streamAbort.abort();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    if (req.signal.aborted) {
+      markAborted();
+    } else {
+      req.signal.addEventListener("abort", markAborted, { once: true });
+    }
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -222,7 +285,7 @@ export async function POST(req: NextRequest) {
           try {
             controller.enqueue(encoder.encode(sseEncode(obj)));
           } catch {
-            clientAborted = true;
+            markAborted();
           }
         };
 
@@ -230,8 +293,10 @@ export async function POST(req: NextRequest) {
 
         let completed = false;
         try {
-          for await (const event of getAiGateway().streamGenerate(generateArgs)) {
-            if (clientAborted) break;
+          for await (const event of getAiGateway().streamGenerate(generateArgs, {
+            signal: streamAbort.signal,
+          })) {
+            if (isAborted()) break;
 
             if (event.type === "delta") {
               send({ type: "delta", content: event.content, requestId });
@@ -239,8 +304,8 @@ export async function POST(req: NextRequest) {
             }
 
             if (event.type === "error") {
-              await prisma.aiRequest.update({
-                where: { requestId },
+              await prisma.aiRequest.updateMany({
+                where: { requestId, status: "PENDING" },
                 data: {
                   status: event.code === "TIMEOUT" ? "TIMEOUT" : "FAILED",
                   errorMessage: event.message?.slice(0, 500),
@@ -248,19 +313,23 @@ export async function POST(req: NextRequest) {
                   latencyMs: Date.now() - start,
                 },
               });
-              await prisma.usageEvent.create({
-                data: {
-                  userId,
-                  apiKeyId,
-                  endpoint: "/api/v1/ai/generate",
-                  method: "POST",
-                  statusCode: 502,
-                  creditsUsed: 0,
-                  requestId,
-                  errorCode: event.code,
-                  latencyMs: Date.now() - start,
-                },
-              });
+              try {
+                await prisma.usageEvent.create({
+                  data: {
+                    userId,
+                    apiKeyId,
+                    endpoint: "/api/v1/ai/generate",
+                    method: "POST",
+                    statusCode: 502,
+                    creditsUsed: 0,
+                    requestId,
+                    errorCode: event.code,
+                    latencyMs: Date.now() - start,
+                  },
+                });
+              } catch {
+                /* unique requestId race */
+              }
               send({
                 type: "error",
                 code: event.code,
@@ -273,34 +342,70 @@ export async function POST(req: NextRequest) {
             }
 
             if (event.type === "done") {
+              // Abort wins over charge if client already disconnected
+              if (isAborted()) {
+                await claimClientAbort({ requestId, userId, apiKeyId, start });
+                completed = true;
+                break;
+              }
+
+              // Atomic claim: only one path can move PENDING → SUCCESS
+              const claimed = await prisma.aiRequest.updateMany({
+                where: { requestId, status: "PENDING" },
+                data: {
+                  status: "SUCCESS",
+                  provider: event.provider,
+                  model: event.model,
+                  inputTokens: event.usage.inputTokens,
+                  outputTokens: event.usage.outputTokens,
+                  creditsCharged: 0,
+                  latencyMs: Date.now() - start,
+                  completedAt: new Date(),
+                  metadata: {
+                    finishReason: event.finishReason,
+                    provider: event.provider,
+                    stream: true,
+                    templateId: body.templateId || null,
+                  },
+                },
+              });
+
+              if (claimed.count === 0) {
+                // Abort (or another path) already finalized — never charge
+                completed = true;
+                break;
+              }
+
+              // Re-check abort after claim; if aborted, leave SUCCESS with 0 credits
+              if (isAborted()) {
+                completed = true;
+                break;
+              }
+
               const charge = await deductCredits(
                 userId,
                 cost,
                 `AI generate stream (${event.model})`,
                 requestId
               );
-              const latencyMs = Date.now() - start;
-              await Promise.all([
-                prisma.aiRequest.update({
+
+              // Final abort check: if client aborted during deduct, still no extra charge
+              // (deduct is idempotent by referenceId). Do not send done if aborted.
+              if (isAborted()) {
+                completed = true;
+                break;
+              }
+
+              if (charge.success && !charge.duplicate) {
+                await prisma.aiRequest.update({
                   where: { requestId },
-                  data: {
-                    status: "SUCCESS",
-                    provider: event.provider,
-                    model: event.model,
-                    inputTokens: event.usage.inputTokens,
-                    outputTokens: event.usage.outputTokens,
-                    creditsCharged: charge.success ? cost : 0,
-                    latencyMs,
-                    completedAt: new Date(),
-                    metadata: {
-                      finishReason: event.finishReason,
-                      provider: event.provider,
-                      stream: true,
-                      templateId: body.templateId || null,
-                    },
-                  },
-                }),
-                prisma.usageEvent.create({
+                  data: { creditsCharged: cost },
+                });
+              }
+
+              const latencyMs = Date.now() - start;
+              try {
+                await prisma.usageEvent.create({
                   data: {
                     userId,
                     apiKeyId,
@@ -313,8 +418,10 @@ export async function POST(req: NextRequest) {
                     latencyMs,
                     requestId,
                   },
-                }),
-              ]);
+                });
+              } catch {
+                /* unique requestId */
+              }
 
               send({
                 type: "done",
@@ -338,9 +445,14 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          if (!completed && !clientAborted) {
-            await prisma.aiRequest.update({
-              where: { requestId },
+          if (isAborted() && !completed) {
+            await claimClientAbort({ requestId, userId, apiKeyId, start });
+            completed = true;
+          }
+
+          if (!completed && !isAborted()) {
+            await prisma.aiRequest.updateMany({
+              where: { requestId, status: "PENDING" },
               data: {
                 status: "FAILED",
                 errorMessage: "Empty stream from provider",
@@ -348,19 +460,23 @@ export async function POST(req: NextRequest) {
                 latencyMs: Date.now() - start,
               },
             });
-            await prisma.usageEvent.create({
-              data: {
-                userId,
-                apiKeyId,
-                endpoint: "/api/v1/ai/generate",
-                method: "POST",
-                statusCode: 502,
-                creditsUsed: 0,
-                requestId,
-                errorCode: "PROVIDER_UNAVAILABLE",
-                latencyMs: Date.now() - start,
-              },
-            });
+            try {
+              await prisma.usageEvent.create({
+                data: {
+                  userId,
+                  apiKeyId,
+                  endpoint: "/api/v1/ai/generate",
+                  method: "POST",
+                  statusCode: 502,
+                  creditsUsed: 0,
+                  requestId,
+                  errorCode: "PROVIDER_UNAVAILABLE",
+                  latencyMs: Date.now() - start,
+                },
+              });
+            } catch {
+              /* ignore */
+            }
             send({
               type: "error",
               code: "PROVIDER_UNAVAILABLE",
@@ -370,39 +486,53 @@ export async function POST(req: NextRequest) {
             });
           }
         } catch (e) {
-          const err = e as AiProviderError;
-          await prisma.aiRequest.update({
-            where: { requestId },
-            data: {
-              status: err.code === "TIMEOUT" ? "TIMEOUT" : "FAILED",
-              errorMessage: (err.message || "Stream failed").slice(0, 500),
-              completedAt: new Date(),
-              latencyMs: Date.now() - start,
-            },
-          });
-          await prisma.usageEvent.create({
-            data: {
-              userId,
-              apiKeyId,
-              endpoint: "/api/v1/ai/generate",
-              method: "POST",
-              statusCode: 502,
-              creditsUsed: 0,
+          if (isAborted()) {
+            try {
+              await claimClientAbort({ requestId, userId, apiKeyId, start });
+            } catch {
+              /* best-effort */
+            }
+          } else {
+            const err = e as AiProviderError;
+            await prisma.aiRequest.updateMany({
+              where: { requestId, status: "PENDING" },
+              data: {
+                status: err.code === "TIMEOUT" ? "TIMEOUT" : "FAILED",
+                errorMessage: (err.message || "Stream failed").slice(0, 500),
+                completedAt: new Date(),
+                latencyMs: Date.now() - start,
+              },
+            });
+            try {
+              await prisma.usageEvent.create({
+                data: {
+                  userId,
+                  apiKeyId,
+                  endpoint: "/api/v1/ai/generate",
+                  method: "POST",
+                  statusCode: 502,
+                  creditsUsed: 0,
+                  requestId,
+                  errorCode: err.code || "UNKNOWN",
+                  latencyMs: Date.now() - start,
+                },
+              });
+            } catch {
+              /* ignore */
+            }
+            send({
+              type: "error",
+              code: err.code || "UNKNOWN",
+              message: err.message || "Stream failed",
+              retryable: err.retryable ?? false,
               requestId,
-              errorCode: err.code || "UNKNOWN",
-              latencyMs: Date.now() - start,
-            },
-          });
-          send({
-            type: "error",
-            code: err.code || "UNKNOWN",
-            message: err.message || "Stream failed",
-            retryable: err.retryable ?? false,
-            requestId,
-          });
+            });
+          }
         } finally {
           try {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            if (!clientAborted) {
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            }
             controller.close();
           } catch {
             /* already closed */
@@ -410,7 +540,7 @@ export async function POST(req: NextRequest) {
         }
       },
       cancel() {
-        clientAborted = true;
+        markAborted();
       },
     });
 
@@ -426,7 +556,6 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // ---------- Non-streaming path (unchanged contract) ----------
   let aiResult;
   try {
     aiResult = await getAiGateway().generate(generateArgs);

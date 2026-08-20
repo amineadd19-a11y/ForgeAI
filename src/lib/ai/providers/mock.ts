@@ -3,6 +3,7 @@ import {
   AiGenerateResponse,
   AiProvider,
   AiStreamEvent,
+  AiStreamOptions,
 } from "../types";
 
 /**
@@ -53,7 +54,13 @@ export class MockProvider implements AiProvider {
     };
   }
 
-  async *streamGenerate(req: AiGenerateRequest): AsyncGenerator<AiStreamEvent, void, unknown> {
+  async *streamGenerate(
+    req: AiGenerateRequest,
+    options?: AiStreamOptions
+  ): AsyncGenerator<AiStreamEvent, void, unknown> {
+    const signal = options?.signal;
+    if (signal?.aborted) return;
+
     const start = Date.now();
     const prompt =
       req.prompt ||
@@ -64,22 +71,40 @@ export class MockProvider implements AiProvider {
       prompt.length > 500 ? "…" : ""
     }\n\nThis is a deterministic mock response for development and testing. Configure AI_PROVIDER and AI_API_KEY for real inference.`;
 
-    // Yield in small chunks so playground/tests can exercise streaming UI.
     const chunkSize = 24;
+    let full = "";
     for (let i = 0; i < content.length; i += chunkSize) {
-      await new Promise((r) => setTimeout(r, 8));
-      yield { type: "delta", content: content.slice(i, i + chunkSize) };
+      if (signal?.aborted) return;
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, 8);
+        if (!signal) return;
+        const onAbort = () => {
+          clearTimeout(t);
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }).catch(() => undefined);
+      if (signal?.aborted) return;
+      const piece = content.slice(i, i + chunkSize);
+      full += piece;
+      yield { type: "delta", content: piece };
     }
 
+    if (signal?.aborted) return;
+
     const inputTokens = Math.ceil(prompt.length / 4);
-    const outputTokens = Math.ceil(content.length / 4);
+    const outputTokens = Math.ceil(full.length / 4);
 
     yield {
       type: "done",
       id: `mock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       model: req.model || "mock-model-v1",
       provider: this.name,
-      content,
+      content: full,
       usage: {
         inputTokens,
         outputTokens,

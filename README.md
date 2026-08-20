@@ -4,7 +4,7 @@
 
 Secure API · Credits · Subscriptions · Usage-based billing · Provider-agnostic AI gateway
 
-> **v1.2** — Streaming generate (`stream: true`), native xAI / Grok, redesigned landing page.
+> **v1.3** — Pro Playground, model catalog, streaming generate, native xAI / Grok.
 
 ## Mission
 
@@ -16,6 +16,7 @@ ForgeAI provides a production-ready AI processing layer with:
 - Subscription plans + one-time credit packs
 - Provider abstraction (swap providers without rewriting app logic)
 - **Streaming responses** (SSE) on generate
+- **Pro Playground** — model selector, stream toggle, abort, live tokens, request metadata
 - Rate limiting, usage tracking, request history
 - Dashboard, playground, docs
 - Stripe billing with webhook-only credit grants
@@ -68,7 +69,7 @@ npm run db:seed
 npm run dev
 ```
 
-Open http://localhost:3000
+Open http://localhost:3000 — try **Dashboard → Playground**.
 
 ### Quality gate
 
@@ -77,6 +78,8 @@ npm run quality-gate
 ```
 
 ## API Overview
+
+Full copy/paste examples: **[/docs](/docs)** on a running instance.
 
 ### Authentication
 
@@ -90,39 +93,44 @@ Authorization: Bearer fa_live_...
 curl -X POST https://YOUR_DOMAIN/api/v1/ai/generate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Explain rate limiting in one sentence.","model":"grok-3-mini","complexity":"basic"}'
+  -d '{"prompt":"Explain rate limiting in one sentence.","model":"gpt-4o-mini","complexity":"basic","stream":false}'
 ```
 
 ### Generate (streaming SSE)
-
-Pass `"stream": true`. Response is `text/event-stream`:
 
 ```bash
 curl -N -X POST https://YOUR_DOMAIN/api/v1/ai/generate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Write a short haiku about APIs.","stream":true,"complexity":"basic"}'
+  -d '{"prompt":"Write a short haiku about APIs.","model":"grok-3-mini","stream":true,"complexity":"basic"}'
 ```
 
-Event shapes:
+### Model examples
+
+```bash
+# OpenAI
+-d '{"prompt":"Hi","model":"gpt-4o-mini","complexity":"basic"}'
+
+# Gemini
+-d '{"prompt":"Hi","model":"gemini-2.5-flash-lite","complexity":"basic"}'
+
+# Anthropic
+-d '{"prompt":"Hi","model":"claude-3-haiku","complexity":"basic"}'
+
+# Grok
+-d '{"prompt":"Hi","model":"grok-3-mini","complexity":"basic"}'
+```
+
+### SSE events
 
 ```text
 data: {"type":"meta","requestId":"...","model":"..."}
-
 data: {"type":"delta","content":"Hello","requestId":"..."}
-
 data: {"type":"done","id":"...","requestId":"...","content":"...","usage":{...},"latencyMs":123}
-
 data: [DONE]
 ```
 
-On failure during the stream:
-
-```text
-data: {"type":"error","code":"PROVIDER_UNAVAILABLE","message":"...","retryable":true,"requestId":"..."}
-```
-
-Credits are **never** charged until a successful `done` event (JSON path: successful provider response).
+Credits are **never** charged until a successful `done` event (or non-stream success). Failed / aborted / empty streams: **0 credits**.
 
 ## Plans
 

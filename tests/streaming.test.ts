@@ -68,6 +68,17 @@ describe("AI Gateway streamGenerate", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
     expect(events.some((e) => e.type === "done")).toBe(true);
   });
+
+  it("emits exactly one terminal done (not done and error)", async () => {
+    const { getAiGateway } = await import("../src/lib/ai/gateway");
+    const events = [];
+    for await (const ev of getAiGateway().streamGenerate({ prompt: "terminal" })) {
+      events.push(ev);
+    }
+    const terminals = events.filter((e) => e.type === "done" || e.type === "error");
+    expect(terminals.length).toBe(1);
+    expect(terminals[0].type).toBe("done");
+  });
 });
 
 describe("Non-streaming generate still works", () => {

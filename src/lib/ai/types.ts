@@ -76,13 +76,21 @@ export interface AiProviderError {
   statusCode?: number;
 }
 
+export interface AiStreamOptions {
+  /** When aborted, providers must stop fetching/yielding and not emit done. */
+  signal?: AbortSignal;
+}
+
 export interface AiProvider {
   name: string;
   isAvailable(): Promise<boolean>;
   generate(req: AiGenerateRequest): Promise<AiGenerateResponse>;
   listModels(): Promise<string[]>;
   /** Optional SSE-style async generator. Falls back to generate() + synthetic chunks if absent. */
-  streamGenerate?(req: AiGenerateRequest): AsyncGenerator<AiStreamEvent, void, unknown>;
+  streamGenerate?(
+    req: AiGenerateRequest,
+    options?: AiStreamOptions
+  ): AsyncGenerator<AiStreamEvent, void, unknown>;
 }
 
 export type ProviderName = "openai" | "anthropic" | "google" | "xai" | "mock";

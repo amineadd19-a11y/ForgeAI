@@ -1,10 +1,11 @@
 import { prisma } from "./db";
-import { CreditTransactionType } from "@prisma/client";
+import { CreditTransactionType, Prisma } from "@prisma/client";
 import { getCreditCost } from "./config";
 
 /**
  * Atomic credit operations.
  * Uses database transactions to prevent negative balances and race conditions.
+ * USAGE rows with the same referenceId are unique at the DB level (@@unique([type, referenceId])).
  */
 
 export async function getBalance(userId: string): Promise<number> {
@@ -25,52 +26,103 @@ export async function ensureBalanceRecord(userId: string): Promise<void> {
 /**
  * Deduct credits atomically. Returns false if insufficient balance.
  * Never allows negative balance.
+ * When `referenceId` is provided, a prior USAGE transaction with the same
+ * referenceId is treated as already charged (idempotent — no double deduction).
+ * Concurrent duplicate inserts are rejected by @@unique([type, referenceId]).
  */
 export async function deductCredits(
   userId: string,
   amount: number,
   description: string,
   referenceId?: string
-): Promise<{ success: boolean; balanceAfter: number; transactionId?: string }> {
+): Promise<{ success: boolean; balanceAfter: number; transactionId?: string; duplicate?: boolean }> {
   if (amount <= 0) {
     return { success: false, balanceAfter: await getBalance(userId) };
   }
 
-  return prisma.$transaction(async (tx) => {
-    const current = await tx.creditBalance.findUnique({
-      where: { userId },
-    });
+  try {
+    return await prisma.$transaction(async (tx) => {
+      if (referenceId) {
+        const existing = await tx.creditTransaction.findFirst({
+          where: {
+            userId,
+            referenceId,
+            type: CreditTransactionType.USAGE,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (existing) {
+          return {
+            success: true,
+            balanceAfter: existing.balanceAfter,
+            transactionId: existing.id,
+            duplicate: true,
+          };
+        }
+      }
 
-    const balance = current?.balance ?? 0;
-    if (balance < amount) {
-      return { success: false, balanceAfter: balance };
-    }
+      const current = await tx.creditBalance.findUnique({
+        where: { userId },
+      });
 
-    const newBalance = balance - amount;
+      const balance = current?.balance ?? 0;
+      if (balance < amount) {
+        return { success: false, balanceAfter: balance };
+      }
 
-    await tx.creditBalance.upsert({
-      where: { userId },
-      create: { userId, balance: newBalance },
-      update: { balance: newBalance },
-    });
+      const newBalance = balance - amount;
 
-    const txRecord = await tx.creditTransaction.create({
-      data: {
-        userId,
-        type: CreditTransactionType.USAGE,
-        amount: -amount,
+      await tx.creditBalance.upsert({
+        where: { userId },
+        create: { userId, balance: newBalance },
+        update: { balance: newBalance },
+      });
+
+      const txRecord = await tx.creditTransaction.create({
+        data: {
+          userId,
+          type: CreditTransactionType.USAGE,
+          amount: -amount,
+          balanceAfter: newBalance,
+          description,
+          referenceId,
+        },
+      });
+
+      return {
+        success: true,
         balanceAfter: newBalance,
-        description,
-        referenceId,
-      },
+        transactionId: txRecord.id,
+        duplicate: false,
+      };
     });
-
-    return {
-      success: true,
-      balanceAfter: newBalance,
-      transactionId: txRecord.id,
-    };
-  });
+  } catch (e) {
+    // Concurrent insert with same (type, referenceId) — treat as already charged
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002" &&
+      referenceId
+    ) {
+      const existing = await prisma.creditTransaction.findFirst({
+        where: {
+          userId,
+          referenceId,
+          type: CreditTransactionType.USAGE,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existing) {
+        return {
+          success: true,
+          balanceAfter: existing.balanceAfter,
+          transactionId: existing.id,
+          duplicate: true,
+        };
+      }
+      return { success: true, balanceAfter: await getBalance(userId), duplicate: true };
+    }
+    throw e;
+  }
 }
 
 /**
