@@ -2,10 +2,11 @@ import { AiProviderError, AiStreamEvent } from "./types";
 
 /**
  * Parse OpenAI-compatible chat.completion.chunk SSE lines into ForgeAI stream events.
+ * When `meta.signal` is aborted, stops without emitting a terminal `done` event.
  */
 export async function* parseOpenAiCompatibleSse(
   body: ReadableStream<Uint8Array>,
-  meta: { provider: string; model: string; start: number }
+  meta: { provider: string; model: string; start: number; signal?: AbortSignal }
 ): AsyncGenerator<AiStreamEvent, void, unknown> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -17,19 +18,36 @@ export async function* parseOpenAiCompatibleSse(
   let inputTokens = 0;
   let outputTokens = 0;
 
+  const onAbort = () => {
+    try {
+      void reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  };
+  if (meta.signal) {
+    if (meta.signal.aborted) onAbort();
+    else meta.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   try {
     while (true) {
+      if (meta.signal?.aborted) return;
       const { done, value } = await reader.read();
       if (done) break;
+      if (meta.signal?.aborted) return;
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
       for (const raw of lines) {
+        if (meta.signal?.aborted) return;
         const line = raw.trim();
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();
         if (payload === "[DONE]") {
+          if (meta.signal?.aborted) return;
           yield {
             type: "done",
             id,
@@ -73,6 +91,8 @@ export async function* parseOpenAiCompatibleSse(
       }
     }
 
+    if (meta.signal?.aborted) return;
+
     // Stream ended without [DONE] — still emit done if we got content
     if (fullContent.length > 0 || finishReason) {
       if (!outputTokens) outputTokens = Math.ceil(fullContent.length / 4);
@@ -92,6 +112,7 @@ export async function* parseOpenAiCompatibleSse(
       };
     }
   } finally {
+    if (meta.signal) meta.signal.removeEventListener("abort", onAbort);
     try {
       reader.releaseLock();
     } catch {
