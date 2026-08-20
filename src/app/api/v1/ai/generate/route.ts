@@ -7,7 +7,7 @@ import { checkRateLimit, rateLimitHeaders } from "@/lib/rate-limit";
 import { generateRequestId } from "@/lib/request-id";
 import { prisma } from "@/lib/db";
 import { PLANS, PlanTier, isModelAllowed } from "@/lib/config";
-import { AiProviderError, AiStreamEvent } from "@/lib/ai/types";
+import { AiProviderError } from "@/lib/ai/types";
 import { renderPromptTemplate } from "@/lib/prompts/library";
 
 export const runtime = "nodejs";
@@ -226,7 +226,6 @@ export async function POST(req: NextRequest) {
           }
         };
 
-        // Meta event so clients can correlate requestId immediately
         send({ type: "meta", requestId, model });
 
         let completed = false;
@@ -274,7 +273,6 @@ export async function POST(req: NextRequest) {
             }
 
             if (event.type === "done") {
-              // Charge only after successful provider completion
               const charge = await deductCredits(
                 userId,
                 cost,
@@ -341,7 +339,6 @@ export async function POST(req: NextRequest) {
           }
 
           if (!completed && !clientAborted) {
-            // Stream ended without done/error (e.g. empty stream)
             await prisma.aiRequest.update({
               where: { requestId },
               data: {
