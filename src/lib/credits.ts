@@ -25,18 +25,39 @@ export async function ensureBalanceRecord(userId: string): Promise<void> {
 /**
  * Deduct credits atomically. Returns false if insufficient balance.
  * Never allows negative balance.
+ * When `referenceId` is provided, a prior USAGE transaction with the same
+ * referenceId is treated as already charged (idempotent — no double deduction).
  */
 export async function deductCredits(
   userId: string,
   amount: number,
   description: string,
   referenceId?: string
-): Promise<{ success: boolean; balanceAfter: number; transactionId?: string }> {
+): Promise<{ success: boolean; balanceAfter: number; transactionId?: string; duplicate?: boolean }> {
   if (amount <= 0) {
     return { success: false, balanceAfter: await getBalance(userId) };
   }
 
   return prisma.$transaction(async (tx) => {
+    if (referenceId) {
+      const existing = await tx.creditTransaction.findFirst({
+        where: {
+          userId,
+          referenceId,
+          type: CreditTransactionType.USAGE,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existing) {
+        return {
+          success: true,
+          balanceAfter: existing.balanceAfter,
+          transactionId: existing.id,
+          duplicate: true,
+        };
+      }
+    }
+
     const current = await tx.creditBalance.findUnique({
       where: { userId },
     });
@@ -69,6 +90,7 @@ export async function deductCredits(
       success: true,
       balanceAfter: newBalance,
       transactionId: txRecord.id,
+      duplicate: false,
     };
   });
 }
