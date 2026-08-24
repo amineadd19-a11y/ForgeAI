@@ -8,6 +8,10 @@ import { generateRequestId } from "@/lib/request-id";
 import { prisma } from "@/lib/db";
 import { PLANS, PlanTier, isModelAllowed } from "@/lib/config";
 import { AiProviderError } from "@/lib/ai/types";
+import {
+  buildAiRequestMetadata,
+  logAiRequestTrace,
+} from "@/lib/ai/request-trace";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -140,15 +144,30 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     const err = e as AiProviderError;
+    const failLatency = Date.now() - start;
+    const failMeta = buildAiRequestMetadata({
+      requestId,
+      provider: process.env.AI_PROVIDER || "openai",
+      model,
+      latencyMs: failLatency,
+      success: false,
+      outcome: err.code === "TIMEOUT" ? "TIMEOUT" : "FAILED",
+      errorCode: err.code,
+      stream: false,
+      endpoint: "/api/v1/ai/analyze",
+      creditsCharged: 0,
+    });
     await prisma.aiRequest.update({
       where: { requestId },
       data: {
         status: err.code === "TIMEOUT" ? "TIMEOUT" : "FAILED",
         errorMessage: err.message?.slice(0, 500),
         completedAt: new Date(),
-        latencyMs: Date.now() - start,
+        latencyMs: failLatency,
+        metadata: failMeta,
       },
     });
+    logAiRequestTrace(failMeta);
     return NextResponse.json(
       {
         error: {
@@ -170,11 +189,27 @@ export async function POST(req: NextRequest) {
       where: { requestId },
       data: {
         status: "SUCCESS",
+        provider: aiResult.provider,
+        model: aiResult.model,
         inputTokens: aiResult.usage.inputTokens,
         outputTokens: aiResult.usage.outputTokens,
         creditsCharged: charge.success ? cost : 0,
         latencyMs,
         completedAt: new Date(),
+        metadata: buildAiRequestMetadata({
+          requestId,
+          provider: aiResult.provider,
+          model: aiResult.model,
+          latencyMs,
+          success: true,
+          outcome: "SUCCESS",
+          inputTokens: aiResult.usage.inputTokens,
+          outputTokens: aiResult.usage.outputTokens,
+          finishReason: aiResult.finishReason,
+          stream: false,
+          endpoint: "/api/v1/ai/analyze",
+          creditsCharged: charge.success ? cost : 0,
+        }),
       },
     }),
     prisma.usageEvent.create({
@@ -192,6 +227,23 @@ export async function POST(req: NextRequest) {
       },
     }),
   ]);
+
+  logAiRequestTrace(
+    buildAiRequestMetadata({
+      requestId,
+      provider: aiResult.provider,
+      model: aiResult.model,
+      latencyMs,
+      success: true,
+      outcome: "SUCCESS",
+      inputTokens: aiResult.usage.inputTokens,
+      outputTokens: aiResult.usage.outputTokens,
+      finishReason: aiResult.finishReason,
+      stream: false,
+      endpoint: "/api/v1/ai/analyze",
+      creditsCharged: charge.success ? cost : 0,
+    })
+  );
 
   return NextResponse.json(
     {
