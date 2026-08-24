@@ -3,8 +3,6 @@ import { describe, it, expect, beforeAll } from "vitest";
 describe("AI Gateway", () => {
   beforeAll(() => {
     process.env.AI_PROVIDER = "mock";
-    // process.env.NODE_ENV is read-only in types; already set via env
-    // process.env.NODE_ENV = "test";
   });
 
   it("generates via mock", async () => {
@@ -22,5 +20,16 @@ describe("AI Gateway", () => {
     await expect(gateway.generate({ prompt: big })).rejects.toMatchObject({
       code: "INVALID_REQUEST",
     });
+  });
+
+  it("health reports configured map and productionReady", async () => {
+    const { getAiGateway } = await import("../src/lib/ai/gateway");
+    const gateway = getAiGateway();
+    const health = await gateway.health();
+    expect(health.primary).toBeTruthy();
+    expect(health).toHaveProperty("productionReady");
+    expect(health).toHaveProperty("configured");
+    expect(typeof health.configured.openai).toBe("boolean");
+    expect(typeof health.providers.mock).toBe("boolean");
   });
 });

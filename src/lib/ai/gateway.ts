@@ -5,6 +5,12 @@ import { GoogleProvider } from "./providers/google";
 import { XaiProvider } from "./providers/xai";
 import { MockProvider } from "./providers/mock";
 import {
+  getConfiguredProviders,
+  getPrimaryProviderName,
+  isProviderConfigured,
+  type ProviderId,
+} from "./provider-env";
+import {
   AiGenerateRequest,
   AiGenerateResponse,
   AiProvider,
@@ -12,14 +18,24 @@ import {
   AiStreamEvent,
 } from "./types";
 
+export type GatewayHealth = {
+  primary: string;
+  /** True when a real (non-mock) provider is usable, or mock in non-production. */
+  available: boolean;
+  /** True when primary has credentials AND isAvailable() succeeded (production). */
+  productionReady: boolean;
+  providers: Record<string, boolean>;
+  /** Key presence only — not live API reachability. */
+  configured: Record<string, boolean>;
+};
+
 export class AiGateway {
   private providers: Map<string, AiProvider> = new Map();
   private primary: string;
   private fallback: string | null;
 
   constructor() {
-    const providerName = (process.env.AI_PROVIDER || "openai").toLowerCase();
-    this.primary = providerName;
+    this.primary = getPrimaryProviderName();
     this.fallback = (process.env.AI_FALLBACK_PROVIDER || "xai").toLowerCase();
 
     this.providers.set("openai", new OpenAIProvider());
@@ -36,7 +52,7 @@ export class AiGateway {
     throw new Error(`AI provider "${this.primary}" not configured`);
   }
 
-  async health(): Promise<{ primary: string; available: boolean; providers: Record<string, boolean> }> {
+  async health(): Promise<GatewayHealth> {
     const status: Record<string, boolean> = {};
     for (const [name, provider] of this.providers) {
       try {
@@ -45,14 +61,42 @@ export class AiGateway {
         status[name] = false;
       }
     }
+
+    const configured = getConfiguredProviders();
+    const isProd = process.env.NODE_ENV === "production";
+
+    // In production, mock must not make the platform look "available".
+    const realAvailable = (Object.entries(status) as [string, boolean][]).some(
+      ([name, ok]) => ok && name !== "mock"
+    );
+    const mockOk = Boolean(status.mock);
     const primaryAvailable = status[this.primary] ?? false;
     const fallbackAvailable = this.fallback ? status[this.fallback] ?? false : false;
-    const anyAvailable = Object.values(status).some(Boolean);
-    const localMockAvailable = process.env.NODE_ENV !== "production" && status.mock;
+
+    const available = isProd
+      ? realAvailable || (this.primary !== "mock" && (primaryAvailable || fallbackAvailable))
+      : primaryAvailable || fallbackAvailable || realAvailable || mockOk;
+
+    const primaryConfigured =
+      this.primary === "mock"
+        ? !isProd
+        : isProviderConfigured(this.primary as ProviderId);
+
+    const productionReady =
+      isProd && primaryConfigured && primaryAvailable && this.primary !== "mock";
+
     return {
       primary: this.primary,
-      available: primaryAvailable || fallbackAvailable || anyAvailable || Boolean(localMockAvailable),
+      available: Boolean(available),
+      productionReady: Boolean(productionReady),
       providers: status,
+      configured: {
+        openai: configured.openai,
+        anthropic: configured.anthropic,
+        google: configured.google,
+        xai: configured.xai,
+        mock: configured.mock,
+      },
     };
   }
 
@@ -234,15 +278,6 @@ export class AiGateway {
     }
   }
 
-  /**
-   * Stream tokens from the primary provider (or fallback chain).
-   * Pass `signal` to stop collecting/yielding when the client aborts.
-   *
-   * Limitation (Next.js / undici): `req.signal` aborts when the client disconnects
-   * on Node runtimes that propagate it; ReadableStream.cancel() also fires when
-   * the consumer cancels the body. Combined, these are the strongest reliable
-   * hooks without custom TCP-level probing.
-   */
   async *streamGenerate(
     req: AiGenerateRequest,
     options?: { allowFallback?: boolean; signal?: AbortSignal }

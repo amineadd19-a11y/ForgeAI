@@ -29,7 +29,9 @@ export async function GET() {
     aiHealth = {
       primary: process.env.AI_PROVIDER || "unknown",
       available: false,
+      productionReady: false,
       providers: {},
+      configured: {},
     };
   }
 
@@ -66,7 +68,9 @@ export async function GET() {
         ai: {
           primary: aiHealth.primary,
           available: aiHealth.available,
+          productionReady: aiHealth.productionReady,
           providers: aiHealth.providers,
+          configured: aiHealth.configured,
         },
       },
     },
