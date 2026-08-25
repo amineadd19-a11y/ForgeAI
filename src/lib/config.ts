@@ -93,7 +93,7 @@ export const PLANS = {
 
 export type PlanTier = keyof typeof PLANS;
 
-export type ModelProviderId = "openai" | "anthropic" | "google" | "xai";
+export type ModelProviderId = "openai" | "anthropic" | "google" | "xai" | "openrouter";
 
 export interface ModelCatalogEntry {
   id: string;
@@ -118,6 +118,12 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
   { id: "grok-3-mini", provider: "xai", label: "Grok 3 Mini", minPlan: "FREE" },
   { id: "grok-3", provider: "xai", label: "Grok 3", minPlan: "STARTER" },
   { id: "grok-2", provider: "xai", label: "Grok 2", minPlan: "STARTER" },
+  {
+    id: "stealth/ox-alpha",
+    provider: "openrouter",
+    label: "Ox Alpha (OpenRouter preview)",
+    minPlan: "PRO",
+  },
 ];
 
 const PLAN_RANK: Record<PlanTier, number> = {
@@ -137,6 +143,8 @@ export function providerLabel(provider: ModelProviderId | string): string {
       return "Google Gemini";
     case "xai":
       return "xAI / Grok";
+    case "openrouter":
+      return "OpenRouter / Ox Alpha";
     case "mock":
       return "Mock (dev)";
     default:
