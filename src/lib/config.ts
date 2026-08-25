@@ -93,7 +93,7 @@ export const PLANS = {
 
 export type PlanTier = keyof typeof PLANS;
 
-export type ModelProviderId = "openai" | "anthropic" | "google" | "xai";
+export type ModelProviderId = "openai" | "anthropic" | "google" | "xai" | "openrouter";
 
 export interface ModelCatalogEntry {
   id: string;
@@ -118,6 +118,7 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
   { id: "grok-3-mini", provider: "xai", label: "Grok 3 Mini", minPlan: "FREE" },
   { id: "grok-3", provider: "xai", label: "Grok 3", minPlan: "STARTER" },
   { id: "grok-2", provider: "xai", label: "Grok 2", minPlan: "STARTER" },
+  { id: "stealth/ox-alpha", provider: "openrouter", label: "Ox Alpha (OpenRouter preview)", minPlan: "PRO" },
 ];
 
 const PLAN_RANK: Record<PlanTier, number> = {
@@ -129,56 +130,36 @@ const PLAN_RANK: Record<PlanTier, number> = {
 
 export function providerLabel(provider: ModelProviderId | string): string {
   switch (provider) {
-    case "openai":
-      return "OpenAI";
-    case "anthropic":
-      return "Anthropic";
-    case "google":
-      return "Google Gemini";
-    case "xai":
-      return "xAI / Grok";
-    case "mock":
-      return "Mock (dev)";
-    default:
-      return provider;
+    case "openai": return "OpenAI";
+    case "anthropic": return "Anthropic";
+    case "google": return "Google Gemini";
+    case "xai": return "xAI / Grok";
+    case "openrouter": return "OpenRouter / Ox Alpha";
+    case "mock": return "Mock (dev)";
+    default: return provider;
   }
 }
 
 export function getModelsForPlan(planTier: PlanTier): ModelCatalogEntry[] {
   return MODEL_CATALOG.filter((m) => isModelAllowed(planTier, m.id));
 }
-
 export function getModelEntry(modelId: string): ModelCatalogEntry | undefined {
   return MODEL_CATALOG.find((m) => m.id === modelId);
 }
-
 export function planMeetsMinimum(userPlan: PlanTier, minPlan: PlanTier): boolean {
   return PLAN_RANK[userPlan] >= PLAN_RANK[minPlan];
 }
-
 export const CREDIT_PACKS = [
   { id: "credits_500", credits: 500, priceCents: 500, label: "500 credits" },
   { id: "credits_2000", credits: 2000, priceCents: 1800, label: "2,000 credits" },
   { id: "credits_10000", credits: 10000, priceCents: 8000, label: "10,000 credits" },
 ] as const;
-
 export const RATE_LIMITS = { globalIpPerMinute: 60, authAttemptsPerMinute: 10 } as const;
-
-export const AI_DEFAULTS = {
-  timeoutMs: 60_000,
-  maxRetries: 2,
-  maxInputChars: 100_000,
-  maxOutputTokensDefault: 4096,
-} as const;
-
-export function getCreditCost(
-  operation: "generate" | "analyze",
-  complexity: "basic" | "standard" | "advanced" = "standard"
-): number {
+export const AI_DEFAULTS = { timeoutMs: 60_000, maxRetries: 2, maxInputChars: 100_000, maxOutputTokensDefault: 4096 } as const;
+export function getCreditCost(operation: "generate" | "analyze", complexity: "basic" | "standard" | "advanced" = "standard"): number {
   const costs = CREDIT_COSTS[operation];
   return costs[complexity] ?? CREDIT_COSTS.default;
 }
-
 export function isModelAllowed(planTier: PlanTier, model: string): boolean {
   const plan = PLANS[planTier];
   if (!plan) return false;
