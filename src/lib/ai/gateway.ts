@@ -8,7 +8,16 @@ import { MockProvider } from "./providers/mock";
 import { getConfiguredProviders, getPrimaryProviderName, isProviderConfigured, type ProviderId } from "./provider-env";
 import { AiGenerateRequest, AiGenerateResponse, AiProvider, AiProviderError, AiStreamEvent } from "./types";
 
-export type GatewayHealth = { primary: string; available: boolean; productionReady: boolean; providers: Record<string, boolean>; configured: Record<string, boolean> };
+export type GatewayHealth = {
+  primary: string;
+  /** True when a real (non-mock) provider is usable, or mock in non-production. */
+  available: boolean;
+  /** True when primary has credentials AND isAvailable() succeeded (production). */
+  productionReady: boolean;
+  providers: Record<string, boolean>;
+  /** Key presence only — not live API reachability. */
+  configured: Record<string, boolean>;
+};
 
 export class AiGateway {
   private providers: Map<string, AiProvider> = new Map();
@@ -53,8 +62,12 @@ export class AiGateway {
   private async runWithRetry(provider: AiProvider, req: AiGenerateRequest, retries: number): Promise<AiGenerateResponse> {
     let lastError: AiProviderError | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
-      try { return await provider.generate(req); }
-      catch (e) { lastError = e as AiProviderError; if (!lastError.retryable || attempt === retries) break; const delay = Math.min(1500 * Math.pow(2, attempt), 8000); await new Promise((resolve) => setTimeout(resolve, delay)); }
+      try { return await provider.generate(req); } catch (e) {
+        lastError = e as AiProviderError;
+        if (!lastError.retryable || attempt === retries) break;
+        const delay = Math.min(1500 * Math.pow(2, attempt), 8000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
     throw lastError || { code: "UNKNOWN", message: "AI request failed", retryable: false };
   }
@@ -69,7 +82,9 @@ export class AiGateway {
 
   private validateInput(req: AiGenerateRequest) {
     const text = req.prompt || req.messages?.map((m) => m.content).join("") || "";
-    if (text.length > AI_DEFAULTS.maxInputChars) throw { code: "INVALID_REQUEST", message: `Input exceeds maximum length of ${AI_DEFAULTS.maxInputChars} characters`, retryable: false } satisfies AiProviderError;
+    if (text.length > AI_DEFAULTS.maxInputChars) {
+      throw { code: "INVALID_REQUEST", message: `Input exceeds maximum length of ${AI_DEFAULTS.maxInputChars} characters`, retryable: false } satisfies AiProviderError;
+    }
   }
 
   async generate(req: AiGenerateRequest, options?: { retries?: number; allowFallback?: boolean }): Promise<AiGenerateResponse> {
@@ -84,7 +99,12 @@ export class AiGateway {
       for (const fallbackName of candidates) {
         const fallback = this.providers.get(fallbackName);
         if (!fallback) continue;
-        try { if (!(await fallback.isAvailable())) continue; return await this.runWithRetry(fallback, this.fallbackRequest(fallbackName, req), 1); } catch { /* next */ }
+        try {
+          if (!(await fallback.isAvailable())) continue;
+          return await this.runWithRetry(fallback, this.fallbackRequest(fallbackName, req), 1);
+        } catch {
+          // Try the next configured provider without masking the original error.
+        }
       }
       if (process.env.NODE_ENV !== "production" && this.primary !== "mock") {
         try { return await this.providers.get("mock")!.generate(req); } catch { /* ignore */ }
@@ -108,11 +128,15 @@ export class AiGateway {
         if (signal?.aborted) return { kind: "aborted" as const };
         if (event.type === "delta") { sawDelta = true; events.push(event); }
         else if (event.type === "done") { events.push(event); return { kind: "success" as const, events }; }
-        else if (event.type === "error") return sawDelta ? { kind: "failAfterContent" as const, events, error: event } : { kind: "failBeforeContent" as const, error: event };
+        else if (event.type === "error") {
+          if (sawDelta) return { kind: "failAfterContent" as const, events, error: event };
+          return { kind: "failBeforeContent" as const, error: event };
+        }
       }
       if (signal?.aborted) return { kind: "aborted" as const };
       if (events.some((e) => e.type === "done")) return { kind: "success" as const, events };
-      return sawDelta ? { kind: "failAfterContent" as const, events, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Stream ended without completion", retryable: true } } : { kind: "failBeforeContent" as const, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Empty stream from provider", retryable: true } };
+      if (sawDelta) return { kind: "failAfterContent" as const, events, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Stream ended without completion", retryable: true } };
+      return { kind: "failBeforeContent" as const, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Empty stream from provider", retryable: true } };
     };
     if (typeof provider.streamGenerate === "function") return (await runNative())!;
     try {
@@ -133,7 +157,8 @@ export class AiGateway {
     this.validateInput(req);
     const signal = options?.signal;
     if (signal?.aborted) return;
-    const ordered: AiProvider[] = [this.getPrimaryProvider()];
+    const ordered: AiProvider[] = [];
+    ordered.push(this.getPrimaryProvider());
     if (options?.allowFallback !== false) {
       const candidates = [this.fallback, "openrouter", "xai", "google", "anthropic", "openai", "mock"].filter((name, index, all): name is string => Boolean(name) && name !== this.primary && all.indexOf(name) === index);
       for (const name of candidates) {
@@ -160,4 +185,7 @@ export class AiGateway {
 }
 
 let gateway: AiGateway | null = null;
-export function getAiGateway(): AiGateway { if (!gateway) gateway = new AiGateway(); return gateway; }
+export function getAiGateway(): AiGateway {
+  if (!gateway) gateway = new AiGateway();
+  return gateway;
+}
