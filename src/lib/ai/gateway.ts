@@ -3,6 +3,7 @@ import { OpenAIProvider } from "./providers/openai";
 import { AnthropicProvider } from "./providers/anthropic";
 import { GoogleProvider } from "./providers/google";
 import { XaiProvider } from "./providers/xai";
+import { OpenRouterProvider } from "./providers/openrouter";
 import { MockProvider } from "./providers/mock";
 import {
   getConfiguredProviders,
@@ -42,6 +43,7 @@ export class AiGateway {
     this.providers.set("anthropic", new AnthropicProvider());
     this.providers.set("google", new GoogleProvider());
     this.providers.set("xai", new XaiProvider());
+    this.providers.set("openrouter", new OpenRouterProvider());
     this.providers.set("mock", new MockProvider());
   }
 
@@ -65,7 +67,6 @@ export class AiGateway {
     const configured = getConfiguredProviders();
     const isProd = process.env.NODE_ENV === "production";
 
-    // In production, mock must not make the platform look "available".
     const realAvailable = (Object.entries(status) as [string, boolean][]).some(
       ([name, ok]) => ok && name !== "mock"
     );
@@ -95,6 +96,7 @@ export class AiGateway {
         anthropic: configured.anthropic,
         google: configured.google,
         xai: configured.xai,
+        openrouter: configured.openrouter,
         mock: configured.mock,
       },
     };
@@ -129,6 +131,9 @@ export class AiGateway {
     if (providerName === "xai") {
       return { ...req, model: process.env.XAI_MODEL || "grok-3-mini" };
     }
+    if (providerName === "openrouter") {
+      return { ...req, model: "stealth/ox-alpha" };
+    }
     return req;
   }
 
@@ -157,7 +162,14 @@ export class AiGateway {
       const error = primaryError as AiProviderError;
       if (options?.allowFallback === false) throw error;
 
-      const candidates = [this.fallback, "xai", "google", "anthropic", "openai"].filter(
+      const candidates = [
+        this.fallback,
+        "openrouter",
+        "xai",
+        "google",
+        "anthropic",
+        "openai",
+      ].filter(
         (name, index, all): name is string =>
           Boolean(name) && name !== this.primary && all.indexOf(name) === index
       );
@@ -292,7 +304,15 @@ export class AiGateway {
     ordered.push(primary);
 
     if (options?.allowFallback !== false) {
-      const candidates = [this.fallback, "xai", "google", "anthropic", "openai", "mock"].filter(
+      const candidates = [
+        this.fallback,
+        "openrouter",
+        "xai",
+        "google",
+        "anthropic",
+        "openai",
+        "mock",
+      ].filter(
         (name, index, all): name is string =>
           Boolean(name) && name !== this.primary && all.indexOf(name) === index
       );
