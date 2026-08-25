@@ -24,7 +24,13 @@ export function hasNonEmptyEnv(...keys: string[]): boolean {
   return keys.some((k) => envPresence(k).trimmedLength > 0);
 }
 
-export type ProviderId = "openai" | "anthropic" | "google" | "xai" | "mock";
+export type ProviderId =
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "xai"
+  | "openrouter"
+  | "mock";
 
 /**
  * Whether the process has credentials configured for a provider.
@@ -40,6 +46,8 @@ export function isProviderConfigured(provider: ProviderId): boolean {
       return hasNonEmptyEnv("GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY");
     case "xai":
       return hasNonEmptyEnv("XAI_API_KEY", "GROK_API_KEY");
+    case "openrouter":
+      return hasNonEmptyEnv("OPENROUTER_API_KEY");
     case "mock":
       return process.env.NODE_ENV !== "production";
     default:
@@ -53,6 +61,7 @@ export function getConfiguredProviders(): Record<ProviderId, boolean> {
     anthropic: isProviderConfigured("anthropic"),
     google: isProviderConfigured("google"),
     xai: isProviderConfigured("xai"),
+    openrouter: isProviderConfigured("openrouter"),
     mock: isProviderConfigured("mock"),
   };
 }
