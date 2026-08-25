@@ -27,6 +27,9 @@ const MODEL_USD_PER_MTOK: Record<
   "grok-3-mini": { input: 0.3, output: 0.5 },
   "grok-3": { input: 3, output: 15 },
   "grok-2": { input: 2, output: 10 },
+  // Ox Alpha is currently listed at $0/$0 on OpenRouter preview.
+  // This is not a billing guarantee; re-check the live route before pricing decisions.
+  "stealth/ox-alpha": { input: 0, output: 0 },
 };
 
 const DEFAULT_RATE = { input: 1, output: 3 };
