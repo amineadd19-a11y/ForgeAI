@@ -93,4 +93,10 @@ export interface AiProvider {
   ): AsyncGenerator<AiStreamEvent, void, unknown>;
 }
 
-export type ProviderName = "openai" | "anthropic" | "google" | "xai" | "mock";
+export type ProviderName =
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "xai"
+  | "openrouter"
+  | "mock";
