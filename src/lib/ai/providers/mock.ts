@@ -16,7 +16,8 @@ export class MockProvider implements AiProvider {
   name = "mock";
 
   async isAvailable(): Promise<boolean> {
-    return true;
+    // Never report mock as available in production (health + gateway).
+    return process.env.NODE_ENV !== "production";
   }
 
   async listModels(): Promise<string[]> {
