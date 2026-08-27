@@ -4,27 +4,10 @@ import { AnthropicProvider } from "./providers/anthropic";
 import { GoogleProvider } from "./providers/google";
 import { XaiProvider } from "./providers/xai";
 import { MockProvider } from "./providers/mock";
-import {
-  getConfiguredProviders,
-  getPrimaryProviderName,
-  isProviderConfigured,
-  type ProviderId,
-} from "./provider-env";
-import {
-  AiGenerateRequest,
-  AiGenerateResponse,
-  AiProvider,
-  AiProviderError,
-  AiStreamEvent,
-} from "./types";
+import { getConfiguredProviders, getPrimaryProviderName, isProviderConfigured, type ProviderId } from "./provider-env";
+import { AiGenerateRequest, AiGenerateResponse, AiProvider, AiProviderError, AiStreamEvent } from "./types";
 
-export type GatewayHealth = {
-  primary: string;
-  available: boolean;
-  productionReady: boolean;
-  providers: Record<string, boolean>;
-  configured: Record<string, boolean>;
-};
+export type GatewayHealth = { primary: string; available: boolean; productionReady: boolean; providers: Record<string, boolean>; configured: Record<string, boolean> };
 
 function providerForModel(model?: string): string | null {
   const id = (model || "").toLowerCase();
@@ -34,6 +17,12 @@ function providerForModel(model?: string): string | null {
   if (id.startsWith("grok-")) return "xai";
   return null;
 }
+
+type StreamResult =
+  | { kind: "success"; events: AiStreamEvent[] }
+  | { kind: "aborted" }
+  | { kind: "failBeforeContent"; error: Extract<AiStreamEvent, { type: "error" }> }
+  | { kind: "failAfterContent"; events: AiStreamEvent[]; error: Extract<AiStreamEvent, { type: "error" }> };
 
 export class AiGateway {
   private providers: Map<string, AiProvider> = new Map();
@@ -61,17 +50,13 @@ export class AiGateway {
     const requested = providerForModel(req.model);
     if (!requested || requested === this.primary) return this.getPrimaryProvider();
     const provider = this.providers.get(requested);
-    if (!provider) {
-      throw { code: "INVALID_REQUEST", message: `No provider configured for model ${req.model}`, retryable: false } satisfies AiProviderError;
-    }
+    if (!provider) throw { code: "INVALID_REQUEST", message: `No provider configured for model ${req.model}`, retryable: false } satisfies AiProviderError;
     return provider;
   }
 
   async health(): Promise<GatewayHealth> {
     const status: Record<string, boolean> = {};
-    for (const [name, provider] of this.providers) {
-      try { status[name] = await provider.isAvailable(); } catch { status[name] = false; }
-    }
+    for (const [name, provider] of this.providers) { try { status[name] = await provider.isAvailable(); } catch { status[name] = false; } }
     const configured = getConfiguredProviders();
     const isProd = process.env.NODE_ENV === "production";
     const realAvailable = (Object.entries(status) as [string, boolean][]).some(([name, ok]) => ok && name !== "mock");
@@ -116,35 +101,30 @@ export class AiGateway {
       for (const fallbackName of candidates) {
         const fallback = this.providers.get(fallbackName);
         if (!fallback) continue;
-        try {
-          if (!(await fallback.isAvailable())) continue;
-          return await this.runWithRetry(fallback, this.fallbackRequest(fallbackName, req), 1);
-        } catch { /* try next */ }
+        try { if (!(await fallback.isAvailable())) continue; return await this.runWithRetry(fallback, this.fallbackRequest(fallbackName, req), 1); } catch { /* try next */ }
       }
-      if (process.env.NODE_ENV !== "production" && this.primary !== "mock") {
-        try { return await this.providers.get("mock")!.generate(req); } catch { /* ignore */ }
-      }
+      if (process.env.NODE_ENV !== "production" && this.primary !== "mock") { try { return await this.providers.get("mock")!.generate(req); } catch { /* ignore */ } }
       throw error;
     }
   }
 
-  private async collectProviderStream(provider: AiProvider, request: AiGenerateRequest, signal?: AbortSignal): Promise<any> {
+  private async collectProviderStream(provider: AiProvider, request: AiGenerateRequest, signal?: AbortSignal): Promise<StreamResult> {
     if (signal?.aborted) return { kind: "aborted" };
     const events: AiStreamEvent[] = [];
     let sawDelta = false;
-    const runNative = async () => {
-      if (typeof provider.streamGenerate !== "function") return null;
+    const runNative = async (): Promise<StreamResult> => {
+      if (typeof provider.streamGenerate !== "function") return { kind: "failBeforeContent", error: { type: "error", code: "PROVIDER_UNAVAILABLE", message: "Provider does not support streaming", retryable: false } };
       for await (const event of provider.streamGenerate(request, { signal })) {
-        if (signal?.aborted) return { kind: "aborted" as const };
+        if (signal?.aborted) return { kind: "aborted" };
         if (event.type === "delta") { sawDelta = true; events.push(event); }
-        else if (event.type === "done") { events.push(event); return { kind: "success" as const, events }; }
-        else if (event.type === "error") return sawDelta ? { kind: "failAfterContent" as const, events, error: event } : { kind: "failBeforeContent" as const, error: event };
+        else if (event.type === "done") { events.push(event); return { kind: "success", events }; }
+        else if (event.type === "error") return sawDelta ? { kind: "failAfterContent", events, error: event } : { kind: "failBeforeContent", error: event };
       }
-      if (signal?.aborted) return { kind: "aborted" as const };
-      if (events.some((e) => e.type === "done")) return { kind: "success" as const, events };
-      return sawDelta ? { kind: "failAfterContent" as const, events, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Stream ended without completion", retryable: true } } : { kind: "failBeforeContent" as const, error: { type: "error" as const, code: "PROVIDER_UNAVAILABLE" as const, message: "Empty stream from provider", retryable: true } };
+      if (signal?.aborted) return { kind: "aborted" };
+      if (events.some((e) => e.type === "done")) return { kind: "success", events };
+      return sawDelta ? { kind: "failAfterContent", events, error: { type: "error", code: "PROVIDER_UNAVAILABLE", message: "Stream ended without completion", retryable: true } } : { kind: "failBeforeContent", error: { type: "error", code: "PROVIDER_UNAVAILABLE", message: "Empty stream from provider", retryable: true } };
     };
-    if (typeof provider.streamGenerate === "function") return (await runNative())!;
+    if (typeof provider.streamGenerate === "function") return await runNative();
     try {
       const res = await provider.generate(request);
       if (signal?.aborted) return { kind: "aborted" };
@@ -172,7 +152,7 @@ export class AiGateway {
       const candidates = [this.fallback, "xai", "google", "anthropic", "openai"].filter((name, index, all): name is string => Boolean(name) && name !== primary.name && all.indexOf(name) === index);
       for (const name of candidates) {
         const provider = this.providers.get(name);
-        if (!provider || name === "mock" && process.env.NODE_ENV === "production") continue;
+        if (!provider || (name === "mock" && process.env.NODE_ENV === "production")) continue;
         try { if (!(await provider.isAvailable())) continue; } catch { continue; }
         ordered.push(provider);
       }
